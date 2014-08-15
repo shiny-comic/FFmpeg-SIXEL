@@ -111,9 +111,6 @@ typedef struct SIXELContext {
     int threshold;
     int dropframe;
     int ignoredelay;
-    int average_r;
-    int average_g;
-    int average_b;
 } SIXELContext;
 
 static int detect_scene_change(SIXELContext *const c,
@@ -124,8 +121,19 @@ static int detect_scene_change(SIXELContext *const c,
     unsigned int r = 0;
     unsigned int g = 0;
     unsigned int b = 0;
+    static unsigned int average_r = 0;
+    static unsigned int average_g = 0;
+    static unsigned int average_b = 0;
 
     if (c->palette == NULL) {
+        goto detected;
+    }
+
+    if (c->palette->origcolors * 4 < palette->origcolors * 3) {
+        goto detected;
+    }
+
+    if (c->palette->origcolors * 3 > palette->origcolors * 4) {
         goto detected;
     }
 
@@ -134,9 +142,9 @@ static int detect_scene_change(SIXELContext *const c,
         g += palette->data[i * 3 + 1];
         b += palette->data[i * 3 + 2];
     }
-    score = (r - c->average_r) * (r - c->average_r)
-          + (g - c->average_g) * (g - c->average_g)
-          + (b - c->average_b) * (b - c->average_b);
+    score = (r - average_r) * (r - average_r)
+          + (g - average_g) * (g - average_g)
+          + (b - average_b) * (b - average_b);
 
     if (score > c->threshold * palette->ncolors * palette->ncolors) {
         goto detected;
@@ -145,9 +153,9 @@ static int detect_scene_change(SIXELContext *const c,
     return 0;
 
 detected:
-    c->average_r = r;
-    c->average_g = g;
-    c->average_b = b;
+    average_r = r;
+    average_g = g;
+    average_b = b;
     return 1;
 }
 
@@ -164,16 +172,18 @@ static int prepare_dynamic_palette(SIXELContext *const c,
                                    AVCodecContext *const codec,
                                    AVPacket *const pkt)
 {
-    sixel_palette_t *palette;
     int ret;
+    static sixel_palette_t *palette = NULL;
 
-    palette = sixel_palette_create(c->reqcolors);
+    if (!palette) {
+        palette = sixel_palette_create(c->reqcolors);
+    }
     ret = sixel_prepare_palette(pkt->data, codec->width, codec->height, 3,
                                 LARGE_NORM, REP_CENTER_BOX, QUALITY_HIGH,
                                 palette);
-
     if (ret != 0) {
         sixel_palette_unref(palette);
+        palette = NULL;
         return (-1);
     }
     if (detect_scene_change(c, palette)) {
@@ -181,6 +191,7 @@ static int prepare_dynamic_palette(SIXELContext *const c,
             sixel_palette_unref(c->palette);
         }
         c->palette = palette;
+        palette = NULL;
     }
     return 0;
 }
@@ -294,6 +305,7 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
     /* create intermidiate bitmap image */
     unsigned char *p = malloc(codec->width * codec->height * 3);
     memcpy(p, pkt->data, codec->width * codec->height * 3);
+
     im = sixel_create_image(p, codec->width, codec->height, 3, c->palette);
     if (!im) {
         return AVERROR(ENOMEM);
@@ -349,7 +361,7 @@ static const AVOption options[] = {
     { "jajuni",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_JAJUNI},   0, 0,    ENC, "diffuse" },
     { "stucki",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_STUCKI},   0, 0,    ENC, "diffuse" },
     { "burkes",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_BURKES},   0, 0,    ENC, "diffuse" },
-    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 500},              0, 10000,ENC },
+    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 1600},              0, 10000,ENC },
     { "dropframe",       "drop late frames",       OFFSET(dropframe),   AV_OPT_TYPE_INT,    {.i64 = 1},                0, 1,    ENC, "dropframe" },
     { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                0, 0,    ENC, "dropframe" },
     { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                0, 0,    ENC, "dropframe" },

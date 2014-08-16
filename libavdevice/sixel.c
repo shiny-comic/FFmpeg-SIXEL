@@ -38,6 +38,7 @@ typedef struct SIXELContext {
     int reqcolors;
     LSOutputContextPtr output;
     sixel_dither_t *dither;
+    sixel_dither_t *testdither;
     int fixedpal;
     enum methodForDiffuse diffuse;
     int threshold;
@@ -45,8 +46,7 @@ typedef struct SIXELContext {
     int ignoredelay;
 } SIXELContext;
 
-static int detect_scene_change(SIXELContext *const c,
-                               sixel_dither_t *dither)
+static int detect_scene_change(SIXELContext *const c)
 {
     int score;
     int i;
@@ -57,30 +57,30 @@ static int detect_scene_change(SIXELContext *const c,
     static unsigned int average_g = 0;
     static unsigned int average_b = 0;
 
-    if (c->dither == NULL) {
+    if (c->dither == NULL)
         goto detected;
-    }
 
-    if (c->dither->origcolors * 4 < dither->origcolors * 3) {
+    /* detect scene change if number of colors increses 20% */
+    if (c->dither->origcolors * 6 < c->testdither->origcolors * 5)
         goto detected;
-    }
 
-    if (c->dither->origcolors * 3 > dither->origcolors * 4) {
+    /* detect scene change if number of colors decreses 20% */
+    if (c->dither->origcolors * 4 > c->testdither->origcolors * 5)
         goto detected;
-    }
 
-    for (i = 0; i < dither->ncolors; i++) {
-        r += dither->palette[i * 3 + 0];
-        g += dither->palette[i * 3 + 1];
-        b += dither->palette[i * 3 + 2];
+    /* compare color average difference between current
+     * palette and previous one */
+    for (i = 0; i < c->testdither->ncolors; i++) {
+        r += c->testdither->palette[i * 3 + 0];
+        g += c->testdither->palette[i * 3 + 1];
+        b += c->testdither->palette[i * 3 + 2];
     }
     score = (r - average_r) * (r - average_r)
           + (g - average_g) * (g - average_g)
           + (b - average_b) * (b - average_b);
-
-    if (score > c->threshold * dither->ncolors * dither->ncolors) {
+    if (score > c->threshold * c->testdither->ncolors
+                             * c->testdither->ncolors)
         goto detected;
-    }
 
     return 0;
 
@@ -107,23 +107,29 @@ static int prepare_dynamic_palette(SIXELContext *const c,
                                    AVPacket *const pkt)
 {
     int ret;
-    static sixel_dither_t *dither = NULL;
 
-    if (!dither) {
-        dither = sixel_dither_create(c->reqcolors);
+    if (c->testdither == NULL) {
+        c->testdither = sixel_dither_create(c->reqcolors);
     }
-    ret = sixel_prepare_palette(dither, pkt->data, codec->width, codec->height, 3);
+
+    /* create histgram and construct color palette
+     * with median cut algorithm. */
+    ret = sixel_prepare_palette(c->testdither, pkt->data,
+                                codec->width, codec->height, 3);
     if (ret != 0) {
-        sixel_dither_unref(dither);
-        dither = NULL;
+        sixel_dither_unref(c->testdither);
+        c->testdither = NULL;
         return (-1);
     }
-    if (detect_scene_change(c, dither)) {
+
+    /* check whether scence is changed. use old palette
+     * if scene is not changed. */
+    if (detect_scene_change(c)) {
         if (c->dither) {
             sixel_dither_unref(c->dither);
         }
-        c->dither = dither;
-        dither = NULL;
+        c->dither = c->testdither;
+        c->testdither = NULL;
     }
     return 0;
 }
@@ -152,6 +158,7 @@ static int sixel_write_header(AVFormatContext *s)
     SIXELContext *c = s->priv_data;
     AVCodecContext *codec = s->streams[0]->codec;
     int ret = 0;
+    static char reset_position[256];
 
     if (s->nb_streams > 1
         || codec->codec_type != AVMEDIA_TYPE_VIDEO
@@ -177,13 +184,13 @@ static int sixel_write_header(AVFormatContext *s)
         c->ignoredelay = 1;
     }
     c->dither = NULL;
-    c->reset_position = malloc(64);
-    if (c->row <= 1 && c->col <= 1) {
-        strcpy(c->reset_position, "\033[H");
-    } else {
-        sprintf(c->reset_position, "\033[%d;%dH", c->row, c->col);
-    }
-    fprintf(sixel_output_file, "\033[?25l\0337");
+    c->testdither = NULL;
+    if (c->row <= 1 && c->col <= 1)
+        strcpy(reset_position, "\033[H");
+    else
+        sprintf(reset_position, "\033[%d;%dH", c->row, c->col);
+    c->reset_position = reset_position;
+    fprintf(sixel_output_file, "\033[?25h\0337");
     c->time_base = s->streams[0]->codec->time_base;
     c->time_frame = av_gettime() / av_q2d(c->time_base);
 
@@ -204,20 +211,18 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
     int64_t curtime, delay;
     struct timespec ts;
     LSImagePtr im;
+    int late_threshold;
 
     if (!c->ignoredelay) {
-        /* Calculate the time of the next frame */
+        /* calculate the time of the next frame */
         c->time_frame += INT64_C(1000000);
-
-        /* wait based on the frame rate */
         curtime = av_gettime();
         delay = c->time_frame * av_q2d(c->time_base) - curtime;
         if (delay <= 0) {
-            if (c->dropframe) {
-                if (delay < INT64_C(-1000000) * av_q2d(c->time_base) * 2) {
-                    return 0;
-                }
-            }
+            /* late threshold of dropping this frame */
+            late_threshold = INT64_C(-1000000) * av_q2d(c->time_base);
+            if (c->dropframe && delay < late_threshold)
+                return 0;  /* drop late frames */
         } else {
             ts.tv_sec = delay / 1000000;
             ts.tv_nsec = (delay % 1000000) * 1000;
@@ -229,20 +234,21 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
 
     if (!c->fixedpal) {
         ret = prepare_dynamic_palette(c, codec, pkt);
-        if (ret != 0) {
+        if (ret != 0)
             return ret;
-        }
     }
 
     /* create intermidiate bitmap image */
-    im = sixel_create_image(pkt->data, codec->width, codec->height, 3, 1, c->dither);
-    if (!im) {
+    im = sixel_create_image(pkt->data, codec->width, codec->height,
+                            /* pixel depth */ 3,
+                            /* pkt->data is borrowed reference */ 1,
+                            c->dither);
+    if (!im)
         return AVERROR(ENOMEM);
-    }
+    c->dither->method_for_diffuse = c->diffuse;
     ret = sixel_apply_palette(im);
-    if (ret != 0) {
+    if (ret != 0)
         return AVERROR(ret);
-    }
     LibSixel_LSImageToSixel(im, c->output);
     LSImage_destroy(im);
     fflush(stdout);
@@ -260,6 +266,10 @@ static int sixel_write_trailer(AVFormatContext *s)
     if (c->output) {
         LSOutputContext_destroy(c->output);
         c->output = NULL;
+    }
+    if (c->testdither) {
+        sixel_dither_unref(c->testdither);
+        c->testdither = NULL;
     }
     if (c->dither) {
         sixel_dither_unref(c->dither);
@@ -290,7 +300,7 @@ static const AVOption options[] = {
     { "jajuni",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_JAJUNI},   0, 0,    ENC, "diffuse" },
     { "stucki",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_STUCKI},   0, 0,    ENC, "diffuse" },
     { "burkes",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_BURKES},   0, 0,    ENC, "diffuse" },
-    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 1600},              0, 10000,ENC },
+    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 2400},              0, 10000,ENC },
     { "dropframe",       "drop late frames",       OFFSET(dropframe),   AV_OPT_TYPE_INT,    {.i64 = 1},                0, 1,    ENC, "dropframe" },
     { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                0, 0,    ENC, "dropframe" },
     { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                0, 0,    ENC, "dropframe" },

@@ -105,7 +105,7 @@ typedef struct SIXELContext {
     int col;
     int reqcolors;
     LSOutputContextPtr output;
-    sixel_palette_t *palette;
+    sixel_dither_t *dither;
     int fixedpal;
     enum methodForDiffuse diffuse;
     int threshold;
@@ -114,7 +114,7 @@ typedef struct SIXELContext {
 } SIXELContext;
 
 static int detect_scene_change(SIXELContext *const c,
-                               sixel_palette_t *palette)
+                               sixel_dither_t *dither)
 {
     int score;
     int i;
@@ -125,28 +125,28 @@ static int detect_scene_change(SIXELContext *const c,
     static unsigned int average_g = 0;
     static unsigned int average_b = 0;
 
-    if (c->palette == NULL) {
+    if (c->dither == NULL) {
         goto detected;
     }
 
-    if (c->palette->origcolors * 4 < palette->origcolors * 3) {
+    if (c->dither->origcolors * 4 < dither->origcolors * 3) {
         goto detected;
     }
 
-    if (c->palette->origcolors * 3 > palette->origcolors * 4) {
+    if (c->dither->origcolors * 3 > dither->origcolors * 4) {
         goto detected;
     }
 
-    for (i = 0; i < palette->ncolors; i++) {
-        r += palette->data[i * 3 + 0];
-        g += palette->data[i * 3 + 1];
-        b += palette->data[i * 3 + 2];
+    for (i = 0; i < dither->ncolors; i++) {
+        r += dither->palette[i * 3 + 0];
+        g += dither->palette[i * 3 + 1];
+        b += dither->palette[i * 3 + 2];
     }
     score = (r - average_r) * (r - average_r)
           + (g - average_g) * (g - average_g)
           + (b - average_b) * (b - average_b);
 
-    if (score > c->threshold * palette->ncolors * palette->ncolors) {
+    if (score > c->threshold * dither->ncolors * dither->ncolors) {
         goto detected;
     }
 
@@ -162,8 +162,8 @@ detected:
 static int prepare_static_palette(SIXELContext *const c,
                                   AVCodecContext *const codec)
 {
-    c->palette = sixel_palette_create(c->reqcolors);
-    memcpy(c->palette->data, fixed_palette, c->reqcolors * 3);
+    c->dither = sixel_dither_create(c->reqcolors);
+    memcpy(c->dither->palette, fixed_palette, c->reqcolors * 3);
 
     return 0;
 }
@@ -173,25 +173,23 @@ static int prepare_dynamic_palette(SIXELContext *const c,
                                    AVPacket *const pkt)
 {
     int ret;
-    static sixel_palette_t *palette = NULL;
+    static sixel_dither_t *dither = NULL;
 
-    if (!palette) {
-        palette = sixel_palette_create(c->reqcolors);
+    if (!dither) {
+        dither = sixel_dither_create(c->reqcolors);
     }
-    ret = sixel_prepare_palette(pkt->data, codec->width, codec->height, 3,
-                                LARGE_NORM, REP_CENTER_BOX, QUALITY_HIGH,
-                                palette);
+    ret = sixel_prepare_palette(dither, pkt->data, codec->width, codec->height, 3);
     if (ret != 0) {
-        sixel_palette_unref(palette);
-        palette = NULL;
+        sixel_dither_unref(dither);
+        dither = NULL;
         return (-1);
     }
-    if (detect_scene_change(c, palette)) {
-        if (c->palette) {
-            sixel_palette_unref(c->palette);
+    if (detect_scene_change(c, dither)) {
+        if (c->dither) {
+            sixel_dither_unref(c->dither);
         }
-        c->palette = palette;
-        palette = NULL;
+        c->dither = dither;
+        dither = NULL;
     }
     return 0;
 }
@@ -244,7 +242,7 @@ static int sixel_write_header(AVFormatContext *s)
     if (!isatty(fileno(sixel_output_file))) {
         c->ignoredelay = 1;
     }
-    c->palette = NULL;
+    c->dither = NULL;
     c->reset_position = malloc(64);
     if (c->row <= 1 && c->col <= 1) {
         strcpy(c->reset_position, "\033[H");
@@ -303,14 +301,11 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
     /* create intermidiate bitmap image */
-    unsigned char *p = malloc(codec->width * codec->height * 3);
-    memcpy(p, pkt->data, codec->width * codec->height * 3);
-
-    im = sixel_create_image(p, codec->width, codec->height, 3, c->palette);
+    im = sixel_create_image(pkt->data, codec->width, codec->height, 3, 1, c->dither);
     if (!im) {
         return AVERROR(ENOMEM);
     }
-    ret = sixel_apply_palette(im, c->diffuse, 1, c->palette->cachetable);
+    ret = sixel_apply_palette(im);
     if (ret != 0) {
         return AVERROR(ret);
     }
@@ -332,9 +327,9 @@ static int sixel_write_trailer(AVFormatContext *s)
         LSOutputContext_destroy(c->output);
         c->output = NULL;
     }
-    if (c->palette) {
-        sixel_palette_unref(c->palette);
-        c->palette = NULL;
+    if (c->dither) {
+        sixel_dither_unref(c->dither);
+        c->dither = NULL;
     }
     if (c->reset_position) {
         free(c->reset_position);

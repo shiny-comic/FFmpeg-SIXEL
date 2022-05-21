@@ -21,16 +21,15 @@
 
 static int jacosub_write_header(AVFormatContext *s)
 {
-    const AVCodecContext *avctx = s->streams[0]->codec;
+    const AVCodecParameters *par = s->streams[0]->codecpar;
 
-    if (avctx->extradata_size) {
-        avio_write(s->pb, avctx->extradata, avctx->extradata_size - 1);
-        avio_flush(s->pb);
+    if (par->extradata_size) {
+        avio_write(s->pb, par->extradata, par->extradata_size);
     }
     return 0;
 }
 
-AVOutputFormat ff_jacosub_muxer = {
+const AVOutputFormat ff_jacosub_muxer = {
     .name           = "jacosub",
     .long_name      = NULL_IF_CONFIG_SMALL("JACOsub subtitle format"),
     .mime_type      = "text/x-jacosub",

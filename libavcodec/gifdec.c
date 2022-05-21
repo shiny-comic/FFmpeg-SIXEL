@@ -25,6 +25,7 @@
 #include "libavutil/opt.h"
 #include "avcodec.h"
 #include "bytestream.h"
+#include "codec_internal.h"
 #include "internal.h"
 #include "lzw.h"
 #include "gif.h"
@@ -130,7 +131,7 @@ static void gif_copy_img_rect(const uint32_t *src, uint32_t *dst,
 static int gif_read_image(GifState *s, AVFrame *frame)
 {
     int left, top, width, height, bits_per_pixel, code_size, flags, pw;
-    int is_interleaved, has_local_palette, y, pass, y1, linesize, pal_size;
+    int is_interleaved, has_local_palette, y, pass, y1, linesize, pal_size, lzwed_len;
     uint32_t *ptr, *pal, *px, *pr, *ptr1;
     int ret;
     uint8_t *idx;
@@ -179,12 +180,20 @@ static int gif_read_image(GifState *s, AVFrame *frame)
     }
 
     /* verify that all the image is inside the screen dimensions */
-    if (!width || width > s->screen_width || left >= s->screen_width) {
-        av_log(s->avctx, AV_LOG_ERROR, "Invalid image width.\n");
+    if (!width || width > s->screen_width) {
+        av_log(s->avctx, AV_LOG_WARNING, "Invalid image width: %d, truncating.\n", width);
+        width = s->screen_width;
+    }
+    if (left >= s->screen_width) {
+        av_log(s->avctx, AV_LOG_ERROR, "Invalid left position: %d.\n", left);
         return AVERROR_INVALIDDATA;
     }
-    if (!height || height > s->screen_height || top >= s->screen_height) {
-        av_log(s->avctx, AV_LOG_ERROR, "Invalid image height.\n");
+    if (!height || height > s->screen_height) {
+        av_log(s->avctx, AV_LOG_WARNING, "Invalid image height: %d, truncating.\n", height);
+        height = s->screen_height;
+    }
+    if (top >= s->screen_height) {
+        av_log(s->avctx, AV_LOG_ERROR, "Invalid top position: %d.\n", top);
         return AVERROR_INVALIDDATA;
     }
     if (left + width > s->screen_width) {
@@ -293,7 +302,8 @@ static int gif_read_image(GifState *s, AVFrame *frame)
 
  decode_tail:
     /* read the garbage data until end marker is found */
-    ff_lzw_decode_tail(s->lzw);
+    lzwed_len = ff_lzw_decode_tail(s->lzw);
+    bytestream2_skipu(&s->gb, lzwed_len);
 
     /* Graphic Control Extension's scope is single frame.
      * Remove its influence. */
@@ -450,10 +460,13 @@ static av_cold int gif_decode_init(AVCodecContext *avctx)
     if (!s->frame)
         return AVERROR(ENOMEM);
     ff_lzw_decode_open(&s->lzw);
+    if (!s->lzw)
+        return AVERROR(ENOMEM);
     return 0;
 }
 
-static int gif_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt)
+static int gif_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
+                            int *got_frame, AVPacket *avpkt)
 {
     GifState *s = avctx->priv_data;
     int ret;
@@ -461,9 +474,8 @@ static int gif_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, A
     bytestream2_init(&s->gb, avpkt->data, avpkt->size);
 
     s->frame->pts     = avpkt->pts;
-    s->frame->pkt_pts = avpkt->pts;
     s->frame->pkt_dts = avpkt->dts;
-    av_frame_set_pkt_duration(s->frame, avpkt->duration);
+    s->frame->pkt_duration = avpkt->duration;
 
     if (avpkt->size >= 6) {
         s->keyframe = memcmp(avpkt->data, gif87a_sig, 6) == 0 ||
@@ -498,7 +510,7 @@ static int gif_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, A
             return AVERROR_INVALIDDATA;
         }
 
-        if ((ret = ff_reget_buffer(avctx, s->frame)) < 0)
+        if ((ret = ff_reget_buffer(avctx, s->frame, 0)) < 0)
             return ret;
 
         s->frame->pict_type = AV_PICTURE_TYPE_P;
@@ -509,7 +521,7 @@ static int gif_decode_frame(AVCodecContext *avctx, void *data, int *got_frame, A
     if (ret < 0)
         return ret;
 
-    if ((ret = av_frame_ref(data, s->frame)) < 0)
+    if ((ret = av_frame_ref(rframe, s->frame)) < 0)
         return ret;
     *got_frame = 1;
 
@@ -544,15 +556,17 @@ static const AVClass decoder_class = {
     .category   = AV_CLASS_CATEGORY_DECODER,
 };
 
-AVCodec ff_gif_decoder = {
-    .name           = "gif",
-    .long_name      = NULL_IF_CONFIG_SMALL("GIF (Graphics Interchange Format)"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_GIF,
+const FFCodec ff_gif_decoder = {
+    .p.name         = "gif",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("GIF (Graphics Interchange Format)"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_GIF,
     .priv_data_size = sizeof(GifState),
     .init           = gif_decode_init,
     .close          = gif_decode_close,
-    .decode         = gif_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
-    .priv_class     = &decoder_class,
+    FF_CODEC_DECODE_CB(gif_decode_frame),
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
+                      FF_CODEC_CAP_INIT_CLEANUP,
+    .p.priv_class   = &decoder_class,
 };

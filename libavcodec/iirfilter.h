@@ -27,7 +27,8 @@
 #ifndef AVCODEC_IIRFILTER_H
 #define AVCODEC_IIRFILTER_H
 
-#include "avcodec.h"
+#include <stddef.h>
+#include <stdint.h>
 
 struct FFIIRFilterCoeffs;
 struct FFIIRFilterState;
@@ -61,7 +62,7 @@ typedef struct FFIIRFilterContext {
     */
     void (*filter_flt)(const struct FFIIRFilterCoeffs *coeffs,
                         struct FFIIRFilterState *state, int size,
-                        const float *src, int sstep, float *dst, int dstep);
+                        const float *src, ptrdiff_t sstep, float *dst, ptrdiff_t dstep);
 } FFIIRFilterContext;
 
 /**
@@ -125,21 +126,6 @@ void ff_iir_filter_free_statep(struct FFIIRFilterState **state);
  * @param dstep  destination stride
  */
 void ff_iir_filter(const struct FFIIRFilterCoeffs *coeffs, struct FFIIRFilterState *state,
-                   int size, const int16_t *src, int sstep, int16_t *dst, int dstep);
-
-/**
- * Perform IIR filtering on floating-point input samples.
- *
- * @param coeffs pointer to filter coefficients
- * @param state  pointer to filter state
- * @param size   input length
- * @param src    source samples
- * @param sstep  source stride
- * @param dst    filtered samples (destination may be the same as input)
- * @param dstep  destination stride
- */
-void ff_iir_filter_flt(const struct FFIIRFilterCoeffs *coeffs,
-                       struct FFIIRFilterState *state, int size,
-                       const float *src, int sstep, float *dst, int dstep);
+                   int size, const int16_t *src, ptrdiff_t sstep, int16_t *dst, ptrdiff_t dstep);
 
 #endif /* AVCODEC_IIRFILTER_H */

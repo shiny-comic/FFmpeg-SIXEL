@@ -20,7 +20,6 @@
  */
 
 #include "avformat.h"
-#include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/intreadwrite.h"
 #include "network.h"
@@ -36,13 +35,13 @@
 struct SAPState {
     URLContext *ann_fd;
     AVFormatContext *sdp_ctx;
-    AVIOContext sdp_pb;
+    FFIOContext sdp_pb;
     uint16_t hash;
     char *sdp;
     int eof;
 };
 
-static int sap_probe(AVProbeData *p)
+static int sap_probe(const AVProbeData *p)
 {
     if (av_strstart(p->filename, "sap:", NULL))
         return AVPROBE_SCORE_MAX;
@@ -54,8 +53,7 @@ static int sap_read_close(AVFormatContext *s)
     struct SAPState *sap = s->priv_data;
     if (sap->sdp_ctx)
         avformat_close_input(&sap->sdp_ctx);
-    if (sap->ann_fd)
-        ffurl_close(sap->ann_fd);
+    ffurl_closep(&sap->ann_fd);
     av_freep(&sap->sdp);
     ff_network_close();
     return 0;
@@ -66,15 +64,15 @@ static int sap_read_header(AVFormatContext *s)
     struct SAPState *sap = s->priv_data;
     char host[1024], path[1024], url[1024];
     uint8_t recvbuf[RTP_MAX_PACKET_LENGTH];
+    const AVInputFormat *infmt;
     int port;
     int ret, i;
-    AVInputFormat* infmt;
 
     if (!ff_network_init())
         return AVERROR(EIO);
 
     av_url_split(NULL, 0, NULL, 0, host, sizeof(host), &port,
-                 path, sizeof(path), s->filename);
+                 path, sizeof(path), s->url);
     if (port < 0)
         port = 9875;
 
@@ -85,8 +83,9 @@ static int sap_read_header(AVFormatContext *s)
 
     ff_url_join(url, sizeof(url), "udp", NULL, host, port, "?localport=%d",
                 port);
-    ret = ffurl_open(&sap->ann_fd, url, AVIO_FLAG_READ,
-                     &s->interrupt_callback, NULL);
+    ret = ffurl_open_whitelist(&sap->ann_fd, url, AVIO_FLAG_READ,
+                               &s->interrupt_callback, NULL,
+                               s->protocol_whitelist, s->protocol_blacklist, NULL);
     if (ret)
         goto fail;
 
@@ -141,6 +140,10 @@ static int sap_read_header(AVFormatContext *s)
         }
 
         sap->sdp = av_strdup(&recvbuf[pos]);
+        if (!sap->sdp) {
+            ret = AVERROR(ENOMEM);
+            goto fail;
+        }
         break;
     }
 
@@ -157,10 +160,10 @@ static int sap_read_header(AVFormatContext *s)
         goto fail;
     }
     sap->sdp_ctx->max_delay = s->max_delay;
-    sap->sdp_ctx->pb        = &sap->sdp_pb;
+    sap->sdp_ctx->pb        = &sap->sdp_pb.pub;
     sap->sdp_ctx->interrupt_callback = s->interrupt_callback;
 
-    if ((ret = ff_copy_whitelists(sap->sdp_ctx, s)) < 0)
+    if ((ret = ff_copy_whiteblacklists(sap->sdp_ctx, s)) < 0)
         goto fail;
 
     ret = avformat_open_input(&sap->sdp_ctx, "temp.sdp", infmt, NULL);
@@ -175,7 +178,7 @@ static int sap_read_header(AVFormatContext *s)
             goto fail;
         }
         st->id = i;
-        avcodec_copy_context(st->codec, sap->sdp_ctx->streams[i]->codec);
+        avcodec_parameters_copy(st->codecpar, sap->sdp_ctx->streams[i]->codecpar);
         st->time_base = sap->sdp_ctx->streams[i]->time_base;
     }
 
@@ -220,18 +223,17 @@ static int sap_fetch_packet(AVFormatContext *s, AVPacket *pkt)
             int i = s->nb_streams;
             AVStream *st = avformat_new_stream(s, NULL);
             if (!st) {
-                av_free_packet(pkt);
                 return AVERROR(ENOMEM);
             }
             st->id = i;
-            avcodec_copy_context(st->codec, sap->sdp_ctx->streams[i]->codec);
+            avcodec_parameters_copy(st->codecpar, sap->sdp_ctx->streams[i]->codecpar);
             st->time_base = sap->sdp_ctx->streams[i]->time_base;
         }
     }
     return ret;
 }
 
-AVInputFormat ff_sap_demuxer = {
+const AVInputFormat ff_sap_demuxer = {
     .name           = "sap",
     .long_name      = NULL_IF_CONFIG_SMALL("SAP input"),
     .priv_data_size = sizeof(struct SAPState),

@@ -41,11 +41,9 @@ typedef struct CACAContext {
     int             list_drivers;
 } CACAContext;
 
-static int caca_write_trailer(AVFormatContext *s)
+static void caca_deinit(AVFormatContext *s)
 {
     CACAContext *c = s->priv_data;
-
-    av_freep(&c->window_title);
 
     if (c->display) {
         caca_free_display(c->display);
@@ -59,7 +57,6 @@ static int caca_write_trailer(AVFormatContext *s)
         caca_free_canvas(c->canvas);
         c->canvas = NULL;
     }
-    return 0;
 }
 
 static void list_drivers(CACAContext *c)
@@ -69,18 +66,18 @@ static void list_drivers(CACAContext *c)
 
     av_log(c->ctx, AV_LOG_INFO, "Available drivers:\n");
     for (i = 0; drivers[i]; i += 2)
-        av_log(c->ctx, AV_LOG_INFO, "%s : %s\n", drivers[i], drivers[i + 1]);
+        av_log(c->ctx, AV_LOG_INFO, "%s: %s\n", drivers[i], drivers[i + 1]);
 }
 
 #define DEFINE_LIST_DITHER(thing, thing_str)                                 \
-static void list_dither_## thing(CACAContext *c)                         \
+static void list_dither_## thing(CACAContext *c)                             \
 {                                                                            \
     const char *const *thing = caca_get_dither_## thing ##_list(c->dither);  \
     int i;                                                                   \
                                                                              \
     av_log(c->ctx, AV_LOG_INFO, "Available %s:\n", thing_str);               \
     for (i = 0; thing[i]; i += 2)                                            \
-        av_log(c->ctx, AV_LOG_INFO, "%s : %s\n", thing[i], thing[i + 1]);    \
+        av_log(c->ctx, AV_LOG_INFO, "%s: %s\n", thing[i], thing[i + 1]);     \
 }
 
 DEFINE_LIST_DITHER(color, "colors");
@@ -92,7 +89,7 @@ static int caca_write_header(AVFormatContext *s)
 {
     CACAContext *c = s->priv_data;
     AVStream *st = s->streams[0];
-    AVCodecContext *encctx = st->codec;
+    AVCodecParameters *encctx = st->codecpar;
     int ret, bpp;
 
     c->ctx = s;
@@ -126,10 +123,10 @@ static int caca_write_header(AVFormatContext *s)
         return AVERROR(EINVAL);
     }
 
-    if (encctx->pix_fmt != AV_PIX_FMT_RGB24) {
+    if (encctx->format != AV_PIX_FMT_RGB24) {
         av_log(s, AV_LOG_ERROR,
                "Unsupported pixel format '%s', choose rgb24\n",
-               av_get_pix_fmt_name(encctx->pix_fmt));
+               av_get_pix_fmt_name(encctx->format));
         return AVERROR(EINVAL);
     }
 
@@ -137,26 +134,28 @@ static int caca_write_header(AVFormatContext *s)
     if (!c->canvas) {
         ret = AVERROR(errno);
         av_log(s, AV_LOG_ERROR, "Failed to create canvas\n");
-        goto fail;
+        return ret;
     }
 
-    bpp = av_get_bits_per_pixel(av_pix_fmt_desc_get(encctx->pix_fmt));
+    bpp = av_get_bits_per_pixel(av_pix_fmt_desc_get(encctx->format));
     c->dither = caca_create_dither(bpp, encctx->width, encctx->height,
                                    bpp / 8 * encctx->width,
                                    0x0000ff, 0x00ff00, 0xff0000, 0);
     if (!c->dither) {
         ret =  AVERROR(errno);
         av_log(s, AV_LOG_ERROR, "Failed to create dither\n");
-        goto fail;
+        return ret;
     }
 
-#define CHECK_DITHER_OPT(opt)                                           \
-    if (caca_set_dither_##opt(c->dither, c->opt) < 0)  {                \
-        ret = AVERROR(errno);                                           \
-        av_log(s, AV_LOG_ERROR, "Failed to set value '%s' for option '%s'\n", \
-               c->opt, #opt);                                           \
-        goto fail;                                                      \
-    }
+#define CHECK_DITHER_OPT(opt) do {                                              \
+    if (caca_set_dither_##opt(c->dither, c->opt) < 0)  {                        \
+        ret = AVERROR(errno);                                                   \
+        av_log(s, AV_LOG_ERROR, "Failed to set value '%s' for option '%s'\n",   \
+               c->opt, #opt);                                                   \
+        return ret;                                                             \
+    }                                                                           \
+} while (0)
+
     CHECK_DITHER_OPT(algorithm);
     CHECK_DITHER_OPT(antialias);
     CHECK_DITHER_OPT(charset);
@@ -167,7 +166,7 @@ static int caca_write_header(AVFormatContext *s)
         ret = AVERROR(errno);
         av_log(s, AV_LOG_ERROR, "Failed to create display\n");
         list_drivers(c);
-        goto fail;
+        return ret;
     }
 
     if (!c->window_width || !c->window_height) {
@@ -176,15 +175,11 @@ static int caca_write_header(AVFormatContext *s)
     }
 
     if (!c->window_title)
-        c->window_title = av_strdup(s->filename);
+        c->window_title = av_strdup(s->url);
     caca_set_display_title(c->display, c->window_title);
-    caca_set_display_time(c->display, av_rescale_q(1, st->codec->time_base, AV_TIME_BASE_Q));
+    caca_set_display_time(c->display, av_rescale_q(1, st->time_base, AV_TIME_BASE_Q));
 
     return 0;
-
-fail:
-    caca_write_trailer(s);
-    return ret;
 }
 
 static int caca_write_packet(AVFormatContext *s, AVPacket *pkt)
@@ -208,10 +203,8 @@ static const AVOption options[] = {
     { "antialias",    "set antialias method",    OFFSET(antialias), AV_OPT_TYPE_STRING, {.str = "default" }, 0, 0, ENC },
     { "charset",      "set charset used to render output", OFFSET(charset), AV_OPT_TYPE_STRING, {.str = "default" }, 0, 0, ENC },
     { "color",        "set color used to render output",   OFFSET(color),   AV_OPT_TYPE_STRING, {.str = "default" }, 0, 0, ENC },
-    { "list_drivers", "list available drivers",  OFFSET(list_drivers), AV_OPT_TYPE_INT, {.i64=0}, 0, 1, ENC, "list_drivers" },
-    { "true",         NULL, 0, AV_OPT_TYPE_CONST, {.i64 = 1}, 0, 0, ENC, "list_drivers" },
-    { "false",        NULL, 0, AV_OPT_TYPE_CONST, {.i64 = 0}, 0, 0, ENC, "list_drivers" },
-    { "list_dither", "list available dither options", OFFSET(list_dither), AV_OPT_TYPE_STRING, {.dbl=0}, 0, 1, ENC, "list_dither" },
+    { "list_drivers", "list available drivers",  OFFSET(list_drivers), AV_OPT_TYPE_BOOL, {.i64=0}, 0, 1, ENC },
+    { "list_dither", "list available dither options", OFFSET(list_dither), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 1, ENC, "list_dither" },
     { "algorithms",   NULL, 0, AV_OPT_TYPE_CONST, {.str = "algorithms"}, 0, 0, ENC, "list_dither" },
     { "antialiases",  NULL, 0, AV_OPT_TYPE_CONST, {.str = "antialiases"},0, 0, ENC, "list_dither" },
     { "charsets",     NULL, 0, AV_OPT_TYPE_CONST, {.str = "charsets"},   0, 0, ENC, "list_dither" },
@@ -220,14 +213,14 @@ static const AVOption options[] = {
 };
 
 static const AVClass caca_class = {
-    .class_name = "caca_outdev",
+    .class_name = "caca outdev",
     .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
     .category   = AV_CLASS_CATEGORY_DEVICE_VIDEO_OUTPUT,
 };
 
-AVOutputFormat ff_caca_muxer = {
+const AVOutputFormat ff_caca_muxer = {
     .name           = "caca",
     .long_name      = NULL_IF_CONFIG_SMALL("caca (color ASCII art) output device"),
     .priv_data_size = sizeof(CACAContext),
@@ -235,7 +228,7 @@ AVOutputFormat ff_caca_muxer = {
     .video_codec    = AV_CODEC_ID_RAWVIDEO,
     .write_header   = caca_write_header,
     .write_packet   = caca_write_packet,
-    .write_trailer  = caca_write_trailer,
+    .deinit         = caca_deinit,
     .flags          = AVFMT_NOFILE,
     .priv_class     = &caca_class,
 };

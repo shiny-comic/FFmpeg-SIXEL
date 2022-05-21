@@ -25,6 +25,8 @@
 #define AVFORMAT_MOVENC_H
 
 #include "avformat.h"
+#include "movenccenc.h"
+#include "libavcodec/packet_internal.h"
 
 #define MOV_FRAG_INFO_ALLOC_INCREMENT 64
 #define MOV_INDEX_CLUSTER_SIZE 1024
@@ -41,10 +43,12 @@
 #define MODE_IPOD 0x20
 #define MODE_ISM  0x40
 #define MODE_F4V  0x80
+#define MODE_AVIF 0x100
 
 typedef struct MOVIentry {
     uint64_t     pos;
     int64_t      dts;
+    int64_t      pts;
     unsigned int size;
     unsigned int samples_in_chunk;
     unsigned int chunkNum;              ///< Chunk number if the current entry is a chunk start otherwise 0
@@ -52,7 +56,9 @@ typedef struct MOVIentry {
     int          cts;
 #define MOV_SYNC_SAMPLE         0x0001
 #define MOV_PARTIAL_SYNC_SAMPLE 0x0002
+#define MOV_DISPOSABLE_SAMPLE   0x0004
     uint32_t     flags;
+    AVProducerReferenceTime prft;
 } MOVIentry;
 
 typedef struct HintSample {
@@ -88,6 +94,7 @@ typedef struct MOVTrack {
     long        sample_size;
     long        chunkCount;
     int         has_keyframes;
+    int         has_disposable;
 #define MOV_TRACK_CTTS         0x0001
 #define MOV_TRACK_STPS         0x0002
 #define MOV_TRACK_ENABLED      0x0004
@@ -100,7 +107,8 @@ typedef struct MOVTrack {
     int         track_id;
     int         tag; ///< stsd fourcc
     AVStream        *st;
-    AVCodecContext *enc;
+    AVCodecParameters *par;
+    int mono_as_fc;
     int multichannel_as_mono;
 
     int         vos_len;
@@ -114,6 +122,8 @@ typedef struct MOVTrack {
     int64_t     start_dts;
     int64_t     start_cts;
     int64_t     end_pts;
+    int         end_reliable;
+    int64_t     dts_shift;
 
     int         hint_track;   ///< the track that hints this track, -1 if no hint track is set
     int         src_track;    ///< the track that this hint (or tmcd) track describes
@@ -127,10 +137,10 @@ typedef struct MOVTrack {
     uint32_t    default_size;
 
     HintSampleQueue sample_queue;
+    AVPacket *cover_image;
 
     AVIOContext *mdat_buf;
     int64_t     data_offset;
-    int64_t     frag_start;
     int         frag_discont;
     int         entries_flushed;
 
@@ -149,7 +159,30 @@ typedef struct MOVTrack {
     } vc1_info;
 
     void       *eac3_priv;
+
+    MOVMuxCencContext cenc;
+
+    uint32_t palette[AVPALETTE_COUNT];
+    int pal_done;
+
+    int is_unaligned_qt_rgb;
+
+    unsigned int squash_fragment_samples_to_one; //< flag to note formats where all samples for a fragment are to be squashed
+
+    PacketList squashed_packet_queue;
 } MOVTrack;
+
+typedef enum {
+    MOV_ENC_NONE = 0,
+    MOV_ENC_CENC_AES_CTR,
+} MOVEncryptionScheme;
+
+typedef enum {
+    MOV_PRFT_NONE = 0,
+    MOV_PRFT_SRC_WALLCLOCK,
+    MOV_PRFT_SRC_PTS,
+    MOV_PRFT_NB
+} MOVPrftBox;
 
 typedef struct MOVMuxContext {
     const AVClass *av_class;
@@ -164,7 +197,6 @@ typedef struct MOVMuxContext {
 
     int flags;
     int rtp_flags;
-    int exact;
 
     int iods_skip;
     int iods_video_profile;
@@ -182,18 +214,41 @@ typedef struct MOVMuxContext {
     int video_track_timescale;
 
     int reserved_moov_size; ///< 0 for disabled, -1 for automatic, size otherwise
-    int64_t reserved_moov_pos;
+    int64_t reserved_header_pos;
 
     char *major_brand;
 
     int per_stream_grouping;
     AVFormatContext *fc;
 
+    AVPacket *pkt;
+
     int use_editlist;
     float gamma;
 
     int frag_interleave;
     int missing_duration_warned;
+
+    char *encryption_scheme_str;
+    MOVEncryptionScheme encryption_scheme;
+    uint8_t *encryption_key;
+    int encryption_key_len;
+    uint8_t *encryption_kid;
+    int encryption_kid_len;
+
+    int need_rewrite_extradata;
+
+    int use_stream_ids_as_track_ids;
+    int track_ids_ok;
+    int write_btrt;
+    int write_tmcd;
+    MOVPrftBox write_prft;
+    int empty_hdlr_name;
+    int movie_timescale;
+
+    int64_t avif_extent_pos;
+    int avif_extent_length;
+    int is_animated_avif;
 } MOVMuxContext;
 
 #define FF_MOV_FLAG_RTP_HINT              (1 <<  0)
@@ -210,8 +265,16 @@ typedef struct MOVMuxContext {
 #define FF_MOV_FLAG_DASH                  (1 << 11)
 #define FF_MOV_FLAG_FRAG_DISCONT          (1 << 12)
 #define FF_MOV_FLAG_DELAY_MOOV            (1 << 13)
-#define FF_MOV_FLAG_WRITE_COLR            (1 << 14)
-#define FF_MOV_FLAG_WRITE_GAMA            (1 << 15)
+#define FF_MOV_FLAG_GLOBAL_SIDX           (1 << 14)
+#define FF_MOV_FLAG_WRITE_COLR            (1 << 15)
+#define FF_MOV_FLAG_WRITE_GAMA            (1 << 16)
+#define FF_MOV_FLAG_USE_MDTA              (1 << 17)
+#define FF_MOV_FLAG_SKIP_TRAILER          (1 << 18)
+#define FF_MOV_FLAG_NEGATIVE_CTS_OFFSETS  (1 << 19)
+#define FF_MOV_FLAG_FRAG_EVERY_FRAME      (1 << 20)
+#define FF_MOV_FLAG_SKIP_SIDX             (1 << 21)
+#define FF_MOV_FLAG_CMAF                  (1 << 22)
+#define FF_MOV_FLAG_PREFER_ICC            (1 << 23)
 
 int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt);
 

@@ -49,7 +49,6 @@ static int config_output_props(AVFilterLink *outlink)
     FrameStepContext *framestep = ctx->priv;
     AVFilterLink *inlink = ctx->inputs[0];
 
-    outlink->flags |= FF_LINK_FLAG_REQUEST_LOOP;
     outlink->frame_rate =
         av_div_q(inlink->frame_rate, (AVRational){framestep->frame_step, 1});
 
@@ -64,7 +63,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *ref)
 {
     FrameStepContext *framestep = inlink->dst->priv;
 
-    if (!(inlink->frame_count % framestep->frame_step)) {
+    if (!(inlink->frame_count_out % framestep->frame_step)) {
         return ff_filter_frame(inlink->dst->outputs[0], ref);
     } else {
         av_frame_free(&ref);
@@ -78,7 +77,6 @@ static const AVFilterPad framestep_inputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad framestep_outputs[] = {
@@ -87,15 +85,14 @@ static const AVFilterPad framestep_outputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .config_props = config_output_props,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_framestep = {
+const AVFilter ff_vf_framestep = {
     .name        = "framestep",
     .description = NULL_IF_CONFIG_SMALL("Select one frame every N frames."),
     .priv_size   = sizeof(FrameStepContext),
     .priv_class  = &framestep_class,
-    .inputs      = framestep_inputs,
-    .outputs     = framestep_outputs,
-    .flags       = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC,
+    FILTER_INPUTS(framestep_inputs),
+    FILTER_OUTPUTS(framestep_outputs),
+    .flags       = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC | AVFILTER_FLAG_METADATA_ONLY,
 };

@@ -49,7 +49,8 @@
 #include <zlib.h>
 
 #include "avcodec.h"
-#include "internal.h"
+#include "codec_internal.h"
+#include "encode.h"
 #include "put_bits.h"
 #include "bytestream.h"
 
@@ -59,11 +60,10 @@ typedef struct FlashSVContext {
     uint8_t        *previous_frame;
     int             image_width, image_height;
     int             block_width, block_height;
-    uint8_t        *tmpblock;
     uint8_t        *encbuffer;
     int             block_size;
-    z_stream        zstream;
     int             last_key_frame;
+    uint8_t         tmpblock[3 * 256 * 256];
 } FlashSVContext;
 
 static int copy_region_enc(uint8_t *sptr, uint8_t *dptr, int dx, int dy,
@@ -92,13 +92,8 @@ static av_cold int flashsv_encode_end(AVCodecContext *avctx)
 {
     FlashSVContext *s = avctx->priv_data;
 
-    deflateEnd(&s->zstream);
-
     av_freep(&s->encbuffer);
     av_freep(&s->previous_frame);
-    av_freep(&s->tmpblock);
-
-    av_frame_free(&avctx->coded_frame);
 
     return 0;
 }
@@ -111,29 +106,19 @@ static av_cold int flashsv_encode_init(AVCodecContext *avctx)
 
     if (avctx->width > 4095 || avctx->height > 4095) {
         av_log(avctx, AV_LOG_ERROR,
-               "Input dimensions too large, input must be max 4096x4096 !\n");
+               "Input dimensions too large, input must be max 4095x4095 !\n");
         return AVERROR_INVALIDDATA;
     }
-
-    // Needed if zlib unused or init aborted before deflateInit
-    memset(&s->zstream, 0, sizeof(z_stream));
 
     s->last_key_frame = 0;
 
     s->image_width  = avctx->width;
     s->image_height = avctx->height;
 
-    s->tmpblock  = av_mallocz(3 * 256 * 256);
     s->encbuffer = av_mallocz(s->image_width * s->image_height * 3);
 
-    if (!s->tmpblock || !s->encbuffer) {
+    if (!s->encbuffer) {
         av_log(avctx, AV_LOG_ERROR, "Memory allocation failed.\n");
-        return AVERROR(ENOMEM);
-    }
-
-    avctx->coded_frame = av_frame_alloc();
-    if (!avctx->coded_frame) {
-        flashsv_encode_end(avctx);
         return AVERROR(ENOMEM);
     }
 
@@ -190,7 +175,6 @@ static int encode_bitstream(FlashSVContext *s, const AVFrame *p, uint8_t *buf,
                 ret = compress2(ptr + 2, &zsize, s->tmpblock,
                                 3 * cur_blk_width * cur_blk_height, 9);
 
-                //ret = deflateReset(&s->zstream);
                 if (ret != Z_OK)
                     av_log(s->avctx, AV_LOG_ERROR,
                            "error while compressing block %dx%d\n", i, j);
@@ -246,7 +230,7 @@ static int flashsv_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         I_frame = 1;
     }
 
-    if ((res = ff_alloc_packet2(avctx, pkt, s->image_width * s->image_height * 3)) < 0)
+    if ((res = ff_alloc_packet(avctx, pkt, s->image_width * s->image_height * 3)) < 0)
         return res;
 
     pkt->size = encode_bitstream(s, p, pkt->data, pkt->size, opt_w * 16, opt_h * 16,
@@ -262,30 +246,26 @@ static int flashsv_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
     //mark the frame type so the muxer can mux it correctly
     if (I_frame) {
-        avctx->coded_frame->pict_type      = AV_PICTURE_TYPE_I;
-        avctx->coded_frame->key_frame      = 1;
         s->last_key_frame = avctx->frame_number;
         ff_dlog(avctx, "Inserting keyframe at frame %d\n", avctx->frame_number);
-    } else {
-        avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
-        avctx->coded_frame->key_frame = 0;
     }
 
-    if (avctx->coded_frame->key_frame)
+    if (I_frame)
         pkt->flags |= AV_PKT_FLAG_KEY;
     *got_packet = 1;
 
     return 0;
 }
 
-AVCodec ff_flashsv_encoder = {
-    .name           = "flashsv",
-    .long_name      = NULL_IF_CONFIG_SMALL("Flash Screen Video"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_FLASHSV,
+const FFCodec ff_flashsv_encoder = {
+    .p.name         = "flashsv",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Flash Screen Video"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_FLASHSV,
     .priv_data_size = sizeof(FlashSVContext),
     .init           = flashsv_encode_init,
-    .encode2        = flashsv_encode_frame,
+    FF_CODEC_ENCODE_CB(flashsv_encode_frame),
     .close          = flashsv_encode_end,
-    .pix_fmts       = (const enum AVPixelFormat[]){ AV_PIX_FMT_BGR24, AV_PIX_FMT_NONE },
+    .p.pix_fmts     = (const enum AVPixelFormat[]){ AV_PIX_FMT_BGR24, AV_PIX_FMT_NONE },
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

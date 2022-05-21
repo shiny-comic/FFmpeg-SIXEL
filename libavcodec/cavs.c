@@ -26,11 +26,9 @@
  */
 
 #include "avcodec.h"
-#include "get_bits.h"
 #include "golomb.h"
 #include "h264chroma.h"
 #include "idctdsp.h"
-#include "internal.h"
 #include "mathops.h"
 #include "qpeldsp.h"
 #include "cavs.h"
@@ -105,7 +103,6 @@ static inline int get_bs(cavs_vector *mvP, cavs_vector *mvQ, int b)
  * | 6 | 7 |
  * 1   3   |
  * ---------
- *
  */
 void ff_cavs_filter(AVSContext *h, enum cavs_mb mb_type)
 {
@@ -257,7 +254,7 @@ void ff_cavs_load_intra_pred_chroma(AVSContext *h)
     }
 }
 
-static void intra_pred_vert(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_vert(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int y;
     uint64_t a = AV_RN64(&top[1]);
@@ -265,7 +262,7 @@ static void intra_pred_vert(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
         *((uint64_t *)(d + y * stride)) = a;
 }
 
-static void intra_pred_horiz(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_horiz(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int y;
     uint64_t a;
@@ -275,7 +272,7 @@ static void intra_pred_horiz(uint8_t *d, uint8_t *top, uint8_t *left, int stride
     }
 }
 
-static void intra_pred_dc_128(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_dc_128(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int y;
     uint64_t a = 0x8080808080808080ULL;
@@ -283,7 +280,7 @@ static void intra_pred_dc_128(uint8_t *d, uint8_t *top, uint8_t *left, int strid
         *((uint64_t *)(d + y * stride)) = a;
 }
 
-static void intra_pred_plane(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_plane(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y, ia;
     int ih = 0;
@@ -305,7 +302,7 @@ static void intra_pred_plane(uint8_t *d, uint8_t *top, uint8_t *left, int stride
 #define LOWPASS(ARRAY, INDEX)                                           \
     ((ARRAY[(INDEX) - 1] + 2 * ARRAY[(INDEX)] + ARRAY[(INDEX) + 1] + 2) >> 2)
 
-static void intra_pred_lp(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_lp(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y;
     for (y = 0; y < 8; y++)
@@ -313,7 +310,7 @@ static void intra_pred_lp(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
             d[y * stride + x] = (LOWPASS(top, x + 1) + LOWPASS(left, y + 1)) >> 1;
 }
 
-static void intra_pred_down_left(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_down_left(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y;
     for (y = 0; y < 8; y++)
@@ -321,7 +318,7 @@ static void intra_pred_down_left(uint8_t *d, uint8_t *top, uint8_t *left, int st
             d[y * stride + x] = (LOWPASS(top, x + y + 2) + LOWPASS(left, x + y + 2)) >> 1;
 }
 
-static void intra_pred_down_right(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_down_right(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y;
     for (y = 0; y < 8; y++)
@@ -334,7 +331,7 @@ static void intra_pred_down_right(uint8_t *d, uint8_t *top, uint8_t *left, int s
                 d[y * stride + x] = LOWPASS(left, y - x);
 }
 
-static void intra_pred_lp_left(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_lp_left(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y;
     for (y = 0; y < 8; y++)
@@ -342,7 +339,7 @@ static void intra_pred_lp_left(uint8_t *d, uint8_t *top, uint8_t *left, int stri
             d[y * stride + x] = LOWPASS(left, y + 1);
 }
 
-static void intra_pred_lp_top(uint8_t *d, uint8_t *top, uint8_t *left, int stride)
+static void intra_pred_lp_top(uint8_t *d, uint8_t *top, uint8_t *left, ptrdiff_t stride)
 {
     int x, y;
     for (y = 0; y < 8; y++)
@@ -538,8 +535,7 @@ void ff_cavs_inter(AVSContext *h, enum cavs_mb mb_type)
 static inline void scale_mv(AVSContext *h, int *d_x, int *d_y,
                             cavs_vector *src, int distp)
 {
-    int den = h->scale_den[FFMAX(src->ref, 0)];
-
+    int64_t den = h->scale_den[FFMAX(src->ref, 0)];
     *d_x = (src->x * distp * den + 256 + FF_SIGNBIT(src->x)) >> 9;
     *d_y = (src->y * distp * den + 256 + FF_SIGNBIT(src->y)) >> 9;
 }
@@ -614,8 +610,15 @@ void ff_cavs_mv(AVSContext *h, enum cavs_mv_loc nP, enum cavs_mv_loc nC,
         mv_pred_median(h, mvP, mvA, mvB, mvC);
 
     if (mode < MV_PRED_PSKIP) {
-        mvP->x += get_se_golomb(&h->gb);
-        mvP->y += get_se_golomb(&h->gb);
+        int mx = get_se_golomb(&h->gb) + (unsigned)mvP->x;
+        int my = get_se_golomb(&h->gb) + (unsigned)mvP->y;
+
+        if (mx != (int16_t)mx || my != (int16_t)my) {
+            av_log(h->avctx, AV_LOG_ERROR, "MV %d %d out of supported range\n", mx, my);
+        } else {
+            mvP->x = mx;
+            mvP->y = my;
+        }
     }
     set_mvs(mvP, size);
 }
@@ -755,16 +758,16 @@ int ff_cavs_init_top_lines(AVSContext *h)
 {
     /* alloc top line of predictors */
     h->top_qp       = av_mallocz(h->mb_width);
-    h->top_mv[0]    = av_mallocz_array(h->mb_width * 2 + 1,  sizeof(cavs_vector));
-    h->top_mv[1]    = av_mallocz_array(h->mb_width * 2 + 1,  sizeof(cavs_vector));
-    h->top_pred_Y   = av_mallocz_array(h->mb_width * 2,  sizeof(*h->top_pred_Y));
-    h->top_border_y = av_mallocz_array(h->mb_width + 1,  16);
-    h->top_border_u = av_mallocz_array(h->mb_width,  10);
-    h->top_border_v = av_mallocz_array(h->mb_width,  10);
+    h->top_mv[0]    = av_calloc(h->mb_width * 2 + 1,  sizeof(cavs_vector));
+    h->top_mv[1]    = av_calloc(h->mb_width * 2 + 1,  sizeof(cavs_vector));
+    h->top_pred_Y   = av_calloc(h->mb_width * 2,  sizeof(*h->top_pred_Y));
+    h->top_border_y = av_calloc(h->mb_width + 1,  16);
+    h->top_border_u = av_calloc(h->mb_width,  10);
+    h->top_border_v = av_calloc(h->mb_width,  10);
 
     /* alloc space for co-located MVs and types */
-    h->col_mv        = av_mallocz_array(h->mb_width * h->mb_height,
-                                        4 * sizeof(cavs_vector));
+    h->col_mv        = av_calloc(h->mb_width * h->mb_height,
+                                 4 * sizeof(*h->col_mv));
     h->col_type_base = av_mallocz(h->mb_width * h->mb_height);
     h->block         = av_mallocz(64 * sizeof(int16_t));
 
@@ -805,10 +808,8 @@ av_cold int ff_cavs_init(AVCodecContext *avctx)
     h->cur.f    = av_frame_alloc();
     h->DPB[0].f = av_frame_alloc();
     h->DPB[1].f = av_frame_alloc();
-    if (!h->cur.f || !h->DPB[0].f || !h->DPB[1].f) {
-        ff_cavs_end(avctx);
+    if (!h->cur.f || !h->DPB[0].f || !h->DPB[1].f)
         return AVERROR(ENOMEM);
-    }
 
     h->luma_scan[0]                     = 0;
     h->luma_scan[1]                     = 8;

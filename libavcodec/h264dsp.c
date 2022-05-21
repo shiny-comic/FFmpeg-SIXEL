@@ -21,7 +21,7 @@
 
 /**
  * @file
- * H.264 / AVC / MPEG4 part10 DSP functions.
+ * H.264 / AVC / MPEG-4 part10 DSP functions.
  * @author Michael Niedermayer <michaelni@gmx.at>
  */
 
@@ -30,7 +30,6 @@
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
 
-#include "avcodec.h"
 #include "h264dsp.h"
 #include "h264idct.h"
 #include "startcode.h"
@@ -158,4 +157,5 @@ av_cold void ff_h264dsp_init(H264DSPContext *c, const int bit_depth,
     if (ARCH_PPC) ff_h264dsp_init_ppc(c, bit_depth, chroma_format_idc);
     if (ARCH_X86) ff_h264dsp_init_x86(c, bit_depth, chroma_format_idc);
     if (ARCH_MIPS) ff_h264dsp_init_mips(c, bit_depth, chroma_format_idc);
+    if (ARCH_LOONGARCH) ff_h264dsp_init_loongarch(c, bit_depth, chroma_format_idc);
 }

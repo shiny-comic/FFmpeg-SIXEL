@@ -27,12 +27,15 @@
  * This is very similar to intra-only MPEG-1.
  */
 
+#include "libavutil/mem_internal.h"
+
 #include "avcodec.h"
 #include "blockdsp.h"
 #include "bswapdsp.h"
+#include "codec_internal.h"
 #include "idctdsp.h"
-#include "mpegvideo.h"
-#include "mpeg12.h"
+#include "mpeg12data.h"
+#include "mpeg12dec.h"
 #include "thread.h"
 
 typedef struct MDECContext {
@@ -40,7 +43,6 @@ typedef struct MDECContext {
     BlockDSPContext bdsp;
     BswapDSPContext bbdsp;
     IDCTDSPContext idsp;
-    ThreadFrame frame;
     GetBitContext gb;
     ScanTable scantable;
     int version;
@@ -49,7 +51,8 @@ typedef struct MDECContext {
     int mb_width;
     int mb_height;
     int mb_x, mb_y;
-    DECLARE_ALIGNED(16, int16_t, block)[6][64];
+    DECLARE_ALIGNED(32, int16_t, block)[6][64];
+    DECLARE_ALIGNED(16, uint16_t, quant_matrix)[64];
     uint8_t *bitstream_buffer;
     unsigned int bitstream_buffer_size;
     int block_last_index[6];
@@ -62,7 +65,7 @@ static inline int mdec_decode_block_intra(MDECContext *a, int16_t *block, int n)
     int component;
     RLTable *rl = &ff_rl_mpeg1;
     uint8_t * const scantable = a->scantable.permutated;
-    const uint16_t *quant_matrix = ff_mpeg1_default_intra_matrix;
+    const uint16_t *quant_matrix = a->quant_matrix;
     const int qscale = a->qscale;
 
     /* DC coefficient */
@@ -71,10 +74,8 @@ static inline int mdec_decode_block_intra(MDECContext *a, int16_t *block, int n)
     } else {
         component = (n <= 3 ? 0 : n - 4 + 1);
         diff = decode_dc(&a->gb, component);
-        if (diff >= 0xffff)
-            return AVERROR_INVALIDDATA;
         a->last_dc[component] += diff;
-        block[0] = a->last_dc[component] << 3;
+        block[0] = a->last_dc[component] * (1 << 3);
     }
 
     i = 0;
@@ -112,11 +113,11 @@ static inline int mdec_decode_block_intra(MDECContext *a, int16_t *block, int n)
                 j = scantable[i];
                 if (level < 0) {
                     level = -level;
-                    level = (level * qscale * quant_matrix[j]) >> 3;
+                    level = (level * (unsigned)qscale * quant_matrix[j]) >> 3;
                     level = (level - 1) | 1;
                     level = -level;
                 } else {
-                    level = (level * qscale * quant_matrix[j]) >> 3;
+                    level = (level * (unsigned)qscale * quant_matrix[j]) >> 3;
                     level = (level - 1) | 1;
                 }
             }
@@ -160,26 +161,24 @@ static inline void idct_put(MDECContext *a, AVFrame *frame, int mb_x, int mb_y)
     a->idsp.idct_put(dest_y + 8 * linesize,     linesize, block[2]);
     a->idsp.idct_put(dest_y + 8 * linesize + 8, linesize, block[3]);
 
-    if (!(a->avctx->flags & CODEC_FLAG_GRAY)) {
+    if (!(a->avctx->flags & AV_CODEC_FLAG_GRAY)) {
         a->idsp.idct_put(dest_cb, frame->linesize[1], block[4]);
         a->idsp.idct_put(dest_cr, frame->linesize[2], block[5]);
     }
 }
 
-static int decode_frame(AVCodecContext *avctx,
-                        void *data, int *got_frame,
-                        AVPacket *avpkt)
+static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                        int *got_frame, AVPacket *avpkt)
 {
     MDECContext * const a = avctx->priv_data;
     const uint8_t *buf    = avpkt->data;
     int buf_size          = avpkt->size;
-    ThreadFrame frame     = { .f = data };
     int ret;
 
-    if ((ret = ff_thread_get_buffer(avctx, &frame, 0)) < 0)
+    if ((ret = ff_thread_get_buffer(avctx, frame, 0)) < 0)
         return ret;
-    frame.f->pict_type = AV_PICTURE_TYPE_I;
-    frame.f->key_frame = 1;
+    frame->pict_type = AV_PICTURE_TYPE_I;
+    frame->key_frame = 1;
 
     av_fast_padded_malloc(&a->bitstream_buffer, &a->bitstream_buffer_size, buf_size);
     if (!a->bitstream_buffer)
@@ -201,7 +200,7 @@ static int decode_frame(AVCodecContext *avctx,
             if ((ret = decode_mb(a, a->block)) < 0)
                 return ret;
 
-            idct_put(a, frame.f, a->mb_x, a->mb_y);
+            idct_put(a, frame, a->mb_x, a->mb_y);
         }
     }
 
@@ -213,6 +212,7 @@ static int decode_frame(AVCodecContext *avctx,
 static av_cold int decode_init(AVCodecContext *avctx)
 {
     MDECContext * const a = avctx->priv_data;
+    int i;
 
     a->mb_width  = (avctx->coded_width  + 15) / 16;
     a->mb_height = (avctx->coded_height + 15) / 16;
@@ -226,19 +226,15 @@ static av_cold int decode_init(AVCodecContext *avctx)
     ff_init_scantable(a->idsp.idct_permutation, &a->scantable,
                       ff_zigzag_direct);
 
-    if (avctx->idct_algo == FF_IDCT_AUTO)
-        avctx->idct_algo = FF_IDCT_SIMPLE;
     avctx->pix_fmt  = AV_PIX_FMT_YUVJ420P;
     avctx->color_range = AVCOL_RANGE_JPEG;
 
-    return 0;
-}
+    /* init q matrix */
+    for (i = 0; i < 64; i++) {
+        int j = a->idsp.idct_permutation[i];
 
-static av_cold int decode_init_thread_copy(AVCodecContext *avctx)
-{
-    MDECContext * const a = avctx->priv_data;
-
-    a->avctx           = avctx;
+        a->quant_matrix[j] = ff_mpeg1_default_intra_matrix[i];
+    }
 
     return 0;
 }
@@ -253,15 +249,15 @@ static av_cold int decode_end(AVCodecContext *avctx)
     return 0;
 }
 
-AVCodec ff_mdec_decoder = {
-    .name             = "mdec",
-    .long_name        = NULL_IF_CONFIG_SMALL("Sony PlayStation MDEC (Motion DECoder)"),
-    .type             = AVMEDIA_TYPE_VIDEO,
-    .id               = AV_CODEC_ID_MDEC,
+const FFCodec ff_mdec_decoder = {
+    .p.name           = "mdec",
+    .p.long_name      = NULL_IF_CONFIG_SMALL("Sony PlayStation MDEC (Motion DECoder)"),
+    .p.type           = AVMEDIA_TYPE_VIDEO,
+    .p.id             = AV_CODEC_ID_MDEC,
     .priv_data_size   = sizeof(MDECContext),
     .init             = decode_init,
     .close            = decode_end,
-    .decode           = decode_frame,
-    .capabilities     = CODEC_CAP_DR1 | CODEC_CAP_FRAME_THREADS,
-    .init_thread_copy = ONLY_IF_THREADS_ENABLED(decode_init_thread_copy)
+    FF_CODEC_DECODE_CB(decode_frame),
+    .p.capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,
+    .caps_internal    = FF_CODEC_CAP_INIT_THREADSAFE,
 };

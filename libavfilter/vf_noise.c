@@ -133,12 +133,13 @@ static av_cold int init_noise(NoiseContext *n, int comp)
 static int query_formats(AVFilterContext *ctx)
 {
     AVFilterFormats *formats = NULL;
-    int fmt;
+    int fmt, ret;
 
     for (fmt = 0; av_pix_fmt_desc_get(fmt); fmt++) {
         const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(fmt);
-        if (desc->flags & AV_PIX_FMT_FLAG_PLANAR && !((desc->comp[0].depth_minus1 + 1) & 7))
-            ff_add_format(&formats, fmt);
+        if (desc->flags & AV_PIX_FMT_FLAG_PLANAR && !(desc->comp[0].depth & 7)
+            && (ret = ff_add_format(&formats, fmt)) < 0)
+                return ret;
     }
 
     return ff_set_common_formats(ctx, formats);
@@ -155,7 +156,7 @@ static int config_input(AVFilterLink *inlink)
     if ((ret = av_image_fill_linesizes(n->bytewidth, inlink->format, inlink->w)) < 0)
         return ret;
 
-    n->height[1] = n->height[2] = FF_CEIL_RSHIFT(inlink->h, desc->log2_chroma_h);
+    n->height[1] = n->height[2] = AV_CEIL_RSHIFT(inlink->h, desc->log2_chroma_h);
     n->height[0] = n->height[3] = inlink->h;
 
     return 0;
@@ -271,7 +272,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
     }
 
     td.in = inpicref; td.out = out;
-    ctx->internal->execute(ctx, filter_slice, &td, NULL, FFMIN(n->height[0], ctx->graph->nb_threads));
+    ff_filter_execute(ctx, filter_slice, &td, NULL,
+                      FFMIN(n->height[0], ff_filter_get_nb_threads(ctx)));
     emms_c();
 
     if (inpicref != out)
@@ -325,7 +327,6 @@ static const AVFilterPad noise_inputs[] = {
         .filter_frame = filter_frame,
         .config_props = config_input,
     },
-    { NULL }
 };
 
 static const AVFilterPad noise_outputs[] = {
@@ -333,18 +334,17 @@ static const AVFilterPad noise_outputs[] = {
         .name = "default",
         .type = AVMEDIA_TYPE_VIDEO,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_noise = {
+const AVFilter ff_vf_noise = {
     .name          = "noise",
     .description   = NULL_IF_CONFIG_SMALL("Add noise."),
     .priv_size     = sizeof(NoiseContext),
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
-    .inputs        = noise_inputs,
-    .outputs       = noise_outputs,
+    FILTER_INPUTS(noise_inputs),
+    FILTER_OUTPUTS(noise_outputs),
+    FILTER_QUERY_FUNC(query_formats),
     .priv_class    = &noise_class,
     .flags         = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC | AVFILTER_FLAG_SLICE_THREADS,
 };

@@ -32,7 +32,7 @@
 /* if we don't know the size in advance */
 #define AU_UNKNOWN_SIZE ((uint32_t)(~0))
 
-static int sol_probe(AVProbeData *p)
+static int sol_probe(const AVProbeData *p)
 {
     /* check file header */
     uint16_t magic = AV_RL32(p->buf);
@@ -110,13 +110,11 @@ static int sol_read_header(AVFormatContext *s)
     st = avformat_new_stream(s, NULL);
     if (!st)
         return -1;
-    st->codec->codec_type = AVMEDIA_TYPE_AUDIO;
-    st->codec->codec_tag = id;
-    st->codec->codec_id = codec;
-    st->codec->channels = channels;
-    st->codec->channel_layout = channels == 1 ? AV_CH_LAYOUT_MONO :
-                                                AV_CH_LAYOUT_STEREO;
-    st->codec->sample_rate = rate;
+    st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    st->codecpar->codec_tag = id;
+    st->codecpar->codec_id = codec;
+    av_channel_layout_default(&st->codecpar->ch_layout,channels);
+    st->codecpar->sample_rate = rate;
     avpriv_set_pts_info(st, 64, 1, rate);
     return 0;
 }
@@ -138,7 +136,7 @@ static int sol_read_packet(AVFormatContext *s,
     return 0;
 }
 
-AVInputFormat ff_sol_demuxer = {
+const AVInputFormat ff_sol_demuxer = {
     .name           = "sol",
     .long_name      = NULL_IF_CONFIG_SMALL("Sierra SOL"),
     .read_probe     = sol_probe,

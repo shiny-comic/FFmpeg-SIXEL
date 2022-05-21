@@ -23,7 +23,7 @@
 
 /* Multipart JPEG */
 
-#define BOUNDARY_TAG "ffserver"
+#define BOUNDARY_TAG "ffmpeg"
 
 typedef struct MPJPEGContext {
     AVClass *class;
@@ -33,33 +33,19 @@ typedef struct MPJPEGContext {
 static int mpjpeg_write_header(AVFormatContext *s)
 {
     MPJPEGContext *mpj = s->priv_data;
-    uint8_t buf1[256];
-
-    snprintf(buf1, sizeof(buf1), "--%s\r\n", mpj->boundary_tag);
-    avio_write(s->pb, buf1, strlen(buf1));
-    avio_flush(s->pb);
+    avio_printf(s->pb, "--%s\r\n", mpj->boundary_tag);
     return 0;
 }
 
 static int mpjpeg_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
     MPJPEGContext *mpj = s->priv_data;
-    uint8_t buf1[256];
-
-    snprintf(buf1, sizeof(buf1), "Content-type: image/jpeg\r\n");
-    avio_write(s->pb, buf1, strlen(buf1));
-
-    snprintf(buf1, sizeof(buf1), "Content-length: %d\r\n\r\n", pkt->size);
-    avio_write(s->pb, buf1, strlen(buf1));
+    avio_printf(s->pb, "Content-type: image/jpeg\r\n");
+    avio_printf(s->pb, "Content-length: %d\r\n\r\n",
+                pkt->size);
     avio_write(s->pb, pkt->data, pkt->size);
 
-    snprintf(buf1, sizeof(buf1), "\r\n--%s\r\n", mpj->boundary_tag);
-    avio_write(s->pb, buf1, strlen(buf1));
-    return 0;
-}
-
-static int mpjpeg_write_trailer(AVFormatContext *s)
-{
+    avio_printf(s->pb, "\r\n--%s\r\n", mpj->boundary_tag);
     return 0;
 }
 
@@ -75,7 +61,7 @@ static const AVClass mpjpeg_muxer_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVOutputFormat ff_mpjpeg_muxer = {
+const AVOutputFormat ff_mpjpeg_muxer = {
     .name              = "mpjpeg",
     .long_name         = NULL_IF_CONFIG_SMALL("MIME multipart JPEG"),
     .mime_type         = "multipart/x-mixed-replace;boundary=" BOUNDARY_TAG,
@@ -85,7 +71,6 @@ AVOutputFormat ff_mpjpeg_muxer = {
     .video_codec       = AV_CODEC_ID_MJPEG,
     .write_header      = mpjpeg_write_header,
     .write_packet      = mpjpeg_write_packet,
-    .write_trailer     = mpjpeg_write_trailer,
     .flags             = AVFMT_NOTIMESTAMPS,
     .priv_class        = &mpjpeg_muxer_class,
 };

@@ -21,16 +21,17 @@
 
 #include "avcodec.h"
 #include "ass.h"
-#include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/bprint.h"
 #include "libavutil/common.h"
 
-int ff_ass_subtitle_header(AVCodecContext *avctx,
-                           const char *font, int font_size,
-                           int color, int back_color,
-                           int bold, int italic, int underline,
-                           int alignment)
+int ff_ass_subtitle_header_full(AVCodecContext *avctx,
+                                int play_res_x, int play_res_y,
+                                const char *font, int font_size,
+                                int primary_color, int secondary_color,
+                                int outline_color, int back_color,
+                                int bold, int italic, int underline,
+                                int border_style, int alignment)
 {
     avctx->subtitle_header = av_asprintf(
              "[Script Info]\r\n"
@@ -38,6 +39,7 @@ int ff_ass_subtitle_header(AVCodecContext *avctx,
              "ScriptType: v4.00+\r\n"
              "PlayResX: %d\r\n"
              "PlayResY: %d\r\n"
+             "ScaledBorderAndShadow: yes\r\n"
              "\r\n"
              "[V4+ Styles]\r\n"
 
@@ -59,22 +61,36 @@ int ff_ass_subtitle_header(AVCodecContext *avctx,
              "%d,%d,%d,0,"          /* Bold, Italic, Underline, StrikeOut */
              "100,100,"             /* Scale{X,Y} */
              "0,0,"                 /* Spacing, Angle */
-             "1,1,0,"               /* BorderStyle, Outline, Shadow */
+             "%d,1,0,"              /* BorderStyle, Outline, Shadow */
              "%d,10,10,10,"         /* Alignment, Margin[LRV] */
              "0\r\n"                /* Encoding */
 
              "\r\n"
              "[Events]\r\n"
              "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n",
-             !(avctx->flags & CODEC_FLAG_BITEXACT) ? AV_STRINGIFY(LIBAVCODEC_VERSION) : "",
-             ASS_DEFAULT_PLAYRESX, ASS_DEFAULT_PLAYRESY,
-             font, font_size, color, color, back_color, back_color,
-             -bold, -italic, -underline, alignment);
+             !(avctx->flags & AV_CODEC_FLAG_BITEXACT) ? AV_STRINGIFY(LIBAVCODEC_VERSION) : "",
+             play_res_x, play_res_y, font, font_size,
+             primary_color, secondary_color, outline_color, back_color,
+             -bold, -italic, -underline, border_style, alignment);
 
     if (!avctx->subtitle_header)
         return AVERROR(ENOMEM);
     avctx->subtitle_header_size = strlen(avctx->subtitle_header);
     return 0;
+}
+
+int ff_ass_subtitle_header(AVCodecContext *avctx,
+                           const char *font, int font_size,
+                           int color, int back_color,
+                           int bold, int italic, int underline,
+                           int border_style, int alignment)
+{
+    return ff_ass_subtitle_header_full(avctx,
+                               ASS_DEFAULT_PLAYRESX, ASS_DEFAULT_PLAYRESY,
+                               font, font_size, color, color,
+                               back_color, back_color,
+                               bold, italic, underline,
+                               border_style, alignment);
 }
 
 int ff_ass_subtitle_header_default(AVCodecContext *avctx)
@@ -86,102 +102,70 @@ int ff_ass_subtitle_header_default(AVCodecContext *avctx)
                                ASS_DEFAULT_BOLD,
                                ASS_DEFAULT_ITALIC,
                                ASS_DEFAULT_UNDERLINE,
+                               ASS_DEFAULT_BORDERSTYLE,
                                ASS_DEFAULT_ALIGNMENT);
 }
 
-static void insert_ts(AVBPrint *buf, int ts)
+char *ff_ass_get_dialog(int readorder, int layer, const char *style,
+                        const char *speaker, const char *text)
 {
-    if (ts == -1) {
-        av_bprintf(buf, "9:59:59.99,");
-    } else {
-        int h, m, s;
-
-        h = ts/360000;  ts -= 360000*h;
-        m = ts/  6000;  ts -=   6000*m;
-        s = ts/   100;  ts -=    100*s;
-        av_bprintf(buf, "%d:%02d:%02d.%02d,", h, m, s, ts);
-    }
+    return av_asprintf("%d,%d,%s,%s,0,0,0,,%s",
+                       readorder, layer, style ? style : "Default",
+                       speaker ? speaker : "", text);
 }
 
-int ff_ass_bprint_dialog(AVBPrint *buf, const char *dialog,
-                         int ts_start, int duration, int raw)
+int ff_ass_add_rect2(AVSubtitle *sub, const char *dialog,
+                    int readorder, int layer, const char *style,
+                    const char *speaker, unsigned *nb_rect_allocated)
 {
-    int dlen;
+    AVSubtitleRect **rects = sub->rects, *rect;
+    char *ass_str;
+    uint64_t new_nb = 0;
 
-    if (!raw || raw == 2) {
-        long int layer = 0;
+    if (sub->num_rects >= UINT_MAX)
+        return AVERROR(ENOMEM);
 
-        if (raw == 2) {
-            /* skip ReadOrder */
-            dialog = strchr(dialog, ',');
-            if (!dialog)
-                return AVERROR_INVALIDDATA;
-            dialog++;
+    if (nb_rect_allocated && *nb_rect_allocated <= sub->num_rects) {
+        if (sub->num_rects < UINT_MAX / 17 * 16) {
+            new_nb = sub->num_rects + sub->num_rects/16 + 1;
+        } else
+            new_nb = UINT_MAX;
+    } else if (!nb_rect_allocated)
+        new_nb = sub->num_rects + 1;
 
-            /* extract Layer or Marked */
-            layer = strtol(dialog, (char**)&dialog, 10);
-            if (*dialog != ',')
-                return AVERROR_INVALIDDATA;
-            dialog++;
-        }
-        av_bprintf(buf, "Dialogue: %ld,", layer);
-        insert_ts(buf, ts_start);
-        insert_ts(buf, duration == -1 ? -1 : ts_start + duration);
-        if (raw != 2)
-            av_bprintf(buf, "Default,,0,0,0,,");
+    if (new_nb) {
+        rects = av_realloc_array(rects, new_nb, sizeof(*sub->rects));
+        if (!rects)
+            return AVERROR(ENOMEM);
+        if (nb_rect_allocated)
+            *nb_rect_allocated = new_nb;
+        sub->rects = rects;
     }
 
-    dlen = strcspn(dialog, "\n");
-    dlen += dialog[dlen] == '\n';
-
-    av_bprintf(buf, "%.*s", dlen, dialog);
-    if (raw == 2)
-        av_bprintf(buf, "\r\n");
-
-    return dlen;
+    rect       = av_mallocz(sizeof(*rect));
+    if (!rect)
+        return AVERROR(ENOMEM);
+    rects[sub->num_rects++] = rect;
+    rect->type = SUBTITLE_ASS;
+    ass_str = ff_ass_get_dialog(readorder, layer, style, speaker, dialog);
+    if (!ass_str)
+        return AVERROR(ENOMEM);
+    rect->ass = ass_str;
+    return 0;
 }
 
 int ff_ass_add_rect(AVSubtitle *sub, const char *dialog,
-                    int ts_start, int duration, int raw)
+                    int readorder, int layer, const char *style,
+                    const char *speaker)
 {
-    AVBPrint buf;
-    int ret, dlen;
-    AVSubtitleRect **rects;
-
-    av_bprint_init(&buf, 0, AV_BPRINT_SIZE_UNLIMITED);
-    if ((ret = ff_ass_bprint_dialog(&buf, dialog, ts_start, duration, raw)) < 0)
-        goto err;
-    dlen = ret;
-    if (!av_bprint_is_complete(&buf))
-        goto errnomem;
-
-    rects = av_realloc_array(sub->rects, (sub->num_rects+1), sizeof(*sub->rects));
-    if (!rects)
-        goto errnomem;
-    sub->rects = rects;
-    sub->end_display_time = FFMAX(sub->end_display_time, 10 * duration);
-    rects[sub->num_rects]       = av_mallocz(sizeof(*rects[0]));
-    rects[sub->num_rects]->type = SUBTITLE_ASS;
-    ret = av_bprint_finalize(&buf, &rects[sub->num_rects]->ass);
-    if (ret < 0)
-        goto err;
-    sub->num_rects++;
-    return dlen;
-
-errnomem:
-    ret = AVERROR(ENOMEM);
-err:
-    av_bprint_finalize(&buf, NULL);
-    return ret;
+    return ff_ass_add_rect2(sub, dialog, readorder, layer, style, speaker, NULL);
 }
 
-int ff_ass_add_rect_bprint(AVSubtitle *sub, AVBPrint *buf,
-                           int ts_start, int duration)
+void ff_ass_decoder_flush(AVCodecContext *avctx)
 {
-    av_bprintf(buf, "\r\n");
-    if (!av_bprint_is_complete(buf))
-        return AVERROR(ENOMEM);
-    return ff_ass_add_rect(sub, buf->str, ts_start, duration, 0);
+    FFASSDecoderContext *s = avctx->priv_data;
+    if (!(avctx->flags2 & AV_CODEC_FLAG2_RO_FLUSH_NOOP))
+        s->readorder = 0;
 }
 
 void ff_ass_bprint_text_event(AVBPrint *buf, const char *p, int size,

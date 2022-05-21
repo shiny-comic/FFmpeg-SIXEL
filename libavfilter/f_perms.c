@@ -18,6 +18,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
 #include "libavutil/lfg.h"
 #include "libavutil/opt.h"
 #include "libavutil/random_seed.h"
@@ -33,7 +35,7 @@ enum mode {
     NB_MODES
 };
 
-typedef struct {
+typedef struct PermsContext {
     const AVClass *class;
     AVLFG lfg;
     int64_t random_seed;
@@ -42,31 +44,29 @@ typedef struct {
 
 #define OFFSET(x) offsetof(PermsContext, x)
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_AUDIO_PARAM | AV_OPT_FLAG_VIDEO_PARAM
+#define TFLAGS AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_AUDIO_PARAM | AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_RUNTIME_PARAM
 
 static const AVOption options[] = {
-    { "mode", "select permissions mode", OFFSET(mode), AV_OPT_TYPE_INT, {.i64 = MODE_NONE}, MODE_NONE, NB_MODES-1, FLAGS, "mode" },
-        { "none",   "do nothing",                       0, AV_OPT_TYPE_CONST, {.i64 = MODE_NONE},       INT_MIN, INT_MAX, FLAGS, "mode" },
-        { "ro",     "set all output frames read-only",  0, AV_OPT_TYPE_CONST, {.i64 = MODE_RO},         INT_MIN, INT_MAX, FLAGS, "mode" },
-        { "rw",     "set all output frames writable",   0, AV_OPT_TYPE_CONST, {.i64 = MODE_RW},         INT_MIN, INT_MAX, FLAGS, "mode" },
-        { "toggle", "switch permissions",               0, AV_OPT_TYPE_CONST, {.i64 = MODE_TOGGLE},     INT_MIN, INT_MAX, FLAGS, "mode" },
-        { "random", "set permissions randomly",         0, AV_OPT_TYPE_CONST, {.i64 = MODE_RANDOM},     INT_MIN, INT_MAX, FLAGS, "mode" },
+    { "mode", "select permissions mode", OFFSET(mode), AV_OPT_TYPE_INT, {.i64 = MODE_NONE}, MODE_NONE, NB_MODES-1, TFLAGS, "mode" },
+        { "none",   "do nothing",                       0, AV_OPT_TYPE_CONST, {.i64 = MODE_NONE},            0, 0, TFLAGS, "mode" },
+        { "ro",     "set all output frames read-only",  0, AV_OPT_TYPE_CONST, {.i64 = MODE_RO},              0, 0, TFLAGS, "mode" },
+        { "rw",     "set all output frames writable",   0, AV_OPT_TYPE_CONST, {.i64 = MODE_RW},              0, 0, TFLAGS, "mode" },
+        { "toggle", "switch permissions",               0, AV_OPT_TYPE_CONST, {.i64 = MODE_TOGGLE},          0, 0, TFLAGS, "mode" },
+        { "random", "set permissions randomly",         0, AV_OPT_TYPE_CONST, {.i64 = MODE_RANDOM},          0, 0, TFLAGS, "mode" },
     { "seed", "set the seed for the random mode", OFFSET(random_seed), AV_OPT_TYPE_INT64, {.i64 = -1}, -1, UINT32_MAX, FLAGS },
     { NULL }
 };
 
 static av_cold int init(AVFilterContext *ctx)
 {
-    PermsContext *perms = ctx->priv;
+    PermsContext *s = ctx->priv;
+    uint32_t seed;
 
-    if (perms->mode == MODE_RANDOM) {
-        uint32_t seed;
-
-        if (perms->random_seed == -1)
-            perms->random_seed = av_get_random_seed();
-        seed = perms->random_seed;
-        av_log(ctx, AV_LOG_INFO, "random seed: 0x%08x\n", seed);
-        av_lfg_init(&perms->lfg, seed);
-    }
+    if (s->random_seed == -1)
+        s->random_seed = av_get_random_seed();
+    seed = s->random_seed;
+    av_log(ctx, AV_LOG_INFO, "random seed: 0x%08"PRIx32"\n", seed);
+    av_lfg_init(&s->lfg, seed);
 
     return 0;
 }
@@ -78,14 +78,14 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
 {
     int ret;
     AVFilterContext *ctx = inlink->dst;
-    PermsContext *perms = ctx->priv;
+    PermsContext *s = ctx->priv;
     AVFrame *out = frame;
     enum perm in_perm = av_frame_is_writable(frame) ? RW : RO;
     enum perm out_perm;
 
-    switch (perms->mode) {
+    switch (s->mode) {
     case MODE_TOGGLE:   out_perm = in_perm == RO ? RW : RO;                 break;
-    case MODE_RANDOM:   out_perm = av_lfg_get(&perms->lfg) & 1 ? RW : RO;   break;
+    case MODE_RANDOM:   out_perm = av_lfg_get(&s->lfg) & 1 ? RW : RO;       break;
     case MODE_RO:       out_perm = RO;                                      break;
     case MODE_RW:       out_perm = RW;                                      break;
     default:            out_perm = in_perm;                                 break;
@@ -111,10 +111,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     return ret;
 }
 
-#if CONFIG_APERMS_FILTER
+AVFILTER_DEFINE_CLASS_EXT(perms, "(a)perms", options);
 
-#define aperms_options options
-AVFILTER_DEFINE_CLASS(aperms);
+#if CONFIG_APERMS_FILTER
 
 static const AVFilterPad aperms_inputs[] = {
     {
@@ -122,7 +121,6 @@ static const AVFilterPad aperms_inputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad aperms_outputs[] = {
@@ -130,24 +128,23 @@ static const AVFilterPad aperms_outputs[] = {
         .name = "default",
         .type = AVMEDIA_TYPE_AUDIO,
     },
-    { NULL }
 };
 
-AVFilter ff_af_aperms = {
+const AVFilter ff_af_aperms = {
     .name        = "aperms",
     .description = NULL_IF_CONFIG_SMALL("Set permissions for the output audio frame."),
+    .priv_class  = &perms_class,
     .init        = init,
     .priv_size   = sizeof(PermsContext),
-    .inputs      = aperms_inputs,
-    .outputs     = aperms_outputs,
-    .priv_class  = &aperms_class,
+    FILTER_INPUTS(aperms_inputs),
+    FILTER_OUTPUTS(aperms_outputs),
+    .flags       = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC |
+                   AVFILTER_FLAG_METADATA_ONLY,
+    .process_command = ff_filter_process_command,
 };
 #endif /* CONFIG_APERMS_FILTER */
 
 #if CONFIG_PERMS_FILTER
-
-#define perms_options options
-AVFILTER_DEFINE_CLASS(perms);
 
 static const AVFilterPad perms_inputs[] = {
     {
@@ -155,7 +152,6 @@ static const AVFilterPad perms_inputs[] = {
         .type         = AVMEDIA_TYPE_VIDEO,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad perms_outputs[] = {
@@ -163,16 +159,18 @@ static const AVFilterPad perms_outputs[] = {
         .name = "default",
         .type = AVMEDIA_TYPE_VIDEO,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_perms = {
+const AVFilter ff_vf_perms = {
     .name        = "perms",
     .description = NULL_IF_CONFIG_SMALL("Set permissions for the output video frame."),
     .init        = init,
     .priv_size   = sizeof(PermsContext),
-    .inputs      = perms_inputs,
-    .outputs     = perms_outputs,
+    FILTER_INPUTS(perms_inputs),
+    FILTER_OUTPUTS(perms_outputs),
     .priv_class  = &perms_class,
+    .flags       = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC |
+                   AVFILTER_FLAG_METADATA_ONLY,
+    .process_command = ff_filter_process_command,
 };
 #endif /* CONFIG_PERMS_FILTER */

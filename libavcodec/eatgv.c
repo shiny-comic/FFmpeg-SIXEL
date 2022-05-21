@@ -28,12 +28,14 @@
  * http://wiki.multimedia.cx/index.php?title=Electronic_Arts_TGV
  */
 
-#include "avcodec.h"
-#define BITSTREAM_READER_LE
-#include "get_bits.h"
-#include "internal.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/mem.h"
+
+#define BITSTREAM_READER_LE
+#include "avcodec.h"
+#include "get_bits.h"
+#include "codec_internal.h"
+#include "internal.h"
 
 #define EA_PREAMBLE_SIZE    8
 #define kVGT_TAG MKTAG('k', 'V', 'G', 'T')
@@ -173,9 +175,10 @@ static int tgv_decode_inter(TgvContext *s, AVFrame *frame,
 
     /* allocate codebook buffers as necessary */
     if (num_mvs > s->num_mvs) {
-        if (av_reallocp_array(&s->mv_codebook, num_mvs, sizeof(*s->mv_codebook))) {
+        int err = av_reallocp_array(&s->mv_codebook, num_mvs, sizeof(*s->mv_codebook));
+        if (err < 0) {
             s->num_mvs = 0;
-            return AVERROR(ENOMEM);
+            return err;
         }
         s->num_mvs = num_mvs;
     }
@@ -225,7 +228,7 @@ static int tgv_decode_inter(TgvContext *s, AVFrame *frame,
         for (x = 0; x < s->avctx->width / 4; x++) {
             unsigned int vector = get_bits(&gb, vector_bits);
             const uint8_t *src;
-            int src_stride;
+            ptrdiff_t src_stride;
 
             if (vector < num_mvs) {
                 int mx = x * 4 + s->mv_codebook[vector][0];
@@ -259,15 +262,13 @@ static int tgv_decode_inter(TgvContext *s, AVFrame *frame,
     return 0;
 }
 
-static int tgv_decode_frame(AVCodecContext *avctx,
-                            void *data, int *got_frame,
-                            AVPacket *avpkt)
+static int tgv_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                            int *got_frame, AVPacket *avpkt)
 {
     const uint8_t *buf     = avpkt->data;
     int buf_size           = avpkt->size;
     TgvContext *s          = avctx->priv_data;
     const uint8_t *buf_end = buf + buf_size;
-    AVFrame *frame         = data;
     int chunk_type, ret;
 
     if (buf_end - buf < EA_PREAMBLE_SIZE)
@@ -297,6 +298,9 @@ static int tgv_decode_frame(AVCodecContext *avctx,
         for(i = 0; i < pal_count && i < AVPALETTE_COUNT && buf_end - buf >= 3; i++) {
             s->palette[i] = 0xFFU << 24 | AV_RB24(buf);
             buf += 3;
+        }
+        if (buf_end - buf < 5) {
+            return AVERROR_INVALIDDATA;
         }
     }
 
@@ -354,14 +358,15 @@ static av_cold int tgv_decode_end(AVCodecContext *avctx)
     return 0;
 }
 
-AVCodec ff_eatgv_decoder = {
-    .name           = "eatgv",
-    .long_name      = NULL_IF_CONFIG_SMALL("Electronic Arts TGV video"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_TGV,
+const FFCodec ff_eatgv_decoder = {
+    .p.name         = "eatgv",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Electronic Arts TGV video"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_TGV,
     .priv_data_size = sizeof(TgvContext),
     .init           = tgv_decode_init,
     .close          = tgv_decode_end,
-    .decode         = tgv_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    FF_CODEC_DECODE_CB(tgv_decode_frame),
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

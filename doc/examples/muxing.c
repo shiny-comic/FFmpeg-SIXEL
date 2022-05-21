@@ -39,6 +39,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/timestamp.h>
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
@@ -52,6 +53,7 @@
 // a wrapper around a single output AVStream
 typedef struct OutputStream {
     AVStream *st;
+    AVCodecContext *enc;
 
     /* pts of the next frame that will be generated */
     int64_t next_pts;
@@ -59,6 +61,8 @@ typedef struct OutputStream {
 
     AVFrame *frame;
     AVFrame *tmp_frame;
+
+    AVPacket *tmp_pkt;
 
     float t, tincr, tincr2;
 
@@ -77,20 +81,50 @@ static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt)
            pkt->stream_index);
 }
 
-static int write_frame(AVFormatContext *fmt_ctx, const AVRational *time_base, AVStream *st, AVPacket *pkt)
+static int write_frame(AVFormatContext *fmt_ctx, AVCodecContext *c,
+                       AVStream *st, AVFrame *frame, AVPacket *pkt)
 {
-    /* rescale output packet timestamp values from codec to stream timebase */
-    av_packet_rescale_ts(pkt, *time_base, st->time_base);
-    pkt->stream_index = st->index;
+    int ret;
 
-    /* Write the compressed frame to the media file. */
-    log_packet(fmt_ctx, pkt);
-    return av_interleaved_write_frame(fmt_ctx, pkt);
+    // send the frame to the encoder
+    ret = avcodec_send_frame(c, frame);
+    if (ret < 0) {
+        fprintf(stderr, "Error sending a frame to the encoder: %s\n",
+                av_err2str(ret));
+        exit(1);
+    }
+
+    while (ret >= 0) {
+        ret = avcodec_receive_packet(c, pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+        else if (ret < 0) {
+            fprintf(stderr, "Error encoding a frame: %s\n", av_err2str(ret));
+            exit(1);
+        }
+
+        /* rescale output packet timestamp values from codec to stream timebase */
+        av_packet_rescale_ts(pkt, c->time_base, st->time_base);
+        pkt->stream_index = st->index;
+
+        /* Write the compressed frame to the media file. */
+        log_packet(fmt_ctx, pkt);
+        ret = av_interleaved_write_frame(fmt_ctx, pkt);
+        /* pkt is now blank (av_interleaved_write_frame() takes ownership of
+         * its contents and resets pkt), so that no unreferencing is necessary.
+         * This would be different if one used av_write_frame(). */
+        if (ret < 0) {
+            fprintf(stderr, "Error while writing output packet: %s\n", av_err2str(ret));
+            exit(1);
+        }
+    }
+
+    return ret == AVERROR_EOF ? 1 : 0;
 }
 
 /* Add an output stream. */
 static void add_stream(OutputStream *ost, AVFormatContext *oc,
-                       AVCodec **codec,
+                       const AVCodec **codec,
                        enum AVCodecID codec_id)
 {
     AVCodecContext *c;
@@ -104,13 +138,24 @@ static void add_stream(OutputStream *ost, AVFormatContext *oc,
         exit(1);
     }
 
-    ost->st = avformat_new_stream(oc, *codec);
+    ost->tmp_pkt = av_packet_alloc();
+    if (!ost->tmp_pkt) {
+        fprintf(stderr, "Could not allocate AVPacket\n");
+        exit(1);
+    }
+
+    ost->st = avformat_new_stream(oc, NULL);
     if (!ost->st) {
         fprintf(stderr, "Could not allocate stream\n");
         exit(1);
     }
     ost->st->id = oc->nb_streams-1;
-    c = ost->st->codec;
+    c = avcodec_alloc_context3(*codec);
+    if (!c) {
+        fprintf(stderr, "Could not alloc an encoding context\n");
+        exit(1);
+    }
+    ost->enc = c;
 
     switch ((*codec)->type) {
     case AVMEDIA_TYPE_AUDIO:
@@ -125,16 +170,7 @@ static void add_stream(OutputStream *ost, AVFormatContext *oc,
                     c->sample_rate = 44100;
             }
         }
-        c->channels        = av_get_channel_layout_nb_channels(c->channel_layout);
-        c->channel_layout = AV_CH_LAYOUT_STEREO;
-        if ((*codec)->channel_layouts) {
-            c->channel_layout = (*codec)->channel_layouts[0];
-            for (i = 0; (*codec)->channel_layouts[i]; i++) {
-                if ((*codec)->channel_layouts[i] == AV_CH_LAYOUT_STEREO)
-                    c->channel_layout = AV_CH_LAYOUT_STEREO;
-            }
-        }
-        c->channels        = av_get_channel_layout_nb_channels(c->channel_layout);
+        av_channel_layout_copy(&c->ch_layout, &(AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO);
         ost->st->time_base = (AVRational){ 1, c->sample_rate };
         break;
 
@@ -155,7 +191,7 @@ static void add_stream(OutputStream *ost, AVFormatContext *oc,
         c->gop_size      = 12; /* emit one intra frame every twelve frames at most */
         c->pix_fmt       = STREAM_PIX_FMT;
         if (c->codec_id == AV_CODEC_ID_MPEG2VIDEO) {
-            /* just for testing, we also add B frames */
+            /* just for testing, we also add B-frames */
             c->max_b_frames = 2;
         }
         if (c->codec_id == AV_CODEC_ID_MPEG1VIDEO) {
@@ -164,7 +200,7 @@ static void add_stream(OutputStream *ost, AVFormatContext *oc,
              * the motion of the chroma plane does not match the luma plane. */
             c->mb_decision = 2;
         }
-    break;
+        break;
 
     default:
         break;
@@ -172,14 +208,14 @@ static void add_stream(OutputStream *ost, AVFormatContext *oc,
 
     /* Some formats want stream headers to be separate. */
     if (oc->oformat->flags & AVFMT_GLOBALHEADER)
-        c->flags |= CODEC_FLAG_GLOBAL_HEADER;
+        c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 }
 
 /**************************************************************/
 /* audio output */
 
 static AVFrame *alloc_audio_frame(enum AVSampleFormat sample_fmt,
-                                  uint64_t channel_layout,
+                                  const AVChannelLayout *channel_layout,
                                   int sample_rate, int nb_samples)
 {
     AVFrame *frame = av_frame_alloc();
@@ -191,7 +227,7 @@ static AVFrame *alloc_audio_frame(enum AVSampleFormat sample_fmt,
     }
 
     frame->format = sample_fmt;
-    frame->channel_layout = channel_layout;
+    av_channel_layout_copy(&frame->ch_layout, channel_layout);
     frame->sample_rate = sample_rate;
     frame->nb_samples = nb_samples;
 
@@ -206,14 +242,15 @@ static AVFrame *alloc_audio_frame(enum AVSampleFormat sample_fmt,
     return frame;
 }
 
-static void open_audio(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg)
+static void open_audio(AVFormatContext *oc, const AVCodec *codec,
+                       OutputStream *ost, AVDictionary *opt_arg)
 {
     AVCodecContext *c;
     int nb_samples;
     int ret;
     AVDictionary *opt = NULL;
 
-    c = ost->st->codec;
+    c = ost->enc;
 
     /* open it */
     av_dict_copy(&opt, opt_arg, 0);
@@ -230,36 +267,43 @@ static void open_audio(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, A
     /* increment frequency by 110 Hz per second */
     ost->tincr2 = 2 * M_PI * 110.0 / c->sample_rate / c->sample_rate;
 
-    if (c->codec->capabilities & CODEC_CAP_VARIABLE_FRAME_SIZE)
+    if (c->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE)
         nb_samples = 10000;
     else
         nb_samples = c->frame_size;
 
-    ost->frame     = alloc_audio_frame(c->sample_fmt, c->channel_layout,
+    ost->frame     = alloc_audio_frame(c->sample_fmt, &c->ch_layout,
                                        c->sample_rate, nb_samples);
-    ost->tmp_frame = alloc_audio_frame(AV_SAMPLE_FMT_S16, c->channel_layout,
+    ost->tmp_frame = alloc_audio_frame(AV_SAMPLE_FMT_S16, &c->ch_layout,
                                        c->sample_rate, nb_samples);
+
+    /* copy the stream parameters to the muxer */
+    ret = avcodec_parameters_from_context(ost->st->codecpar, c);
+    if (ret < 0) {
+        fprintf(stderr, "Could not copy the stream parameters\n");
+        exit(1);
+    }
 
     /* create resampler context */
-        ost->swr_ctx = swr_alloc();
-        if (!ost->swr_ctx) {
-            fprintf(stderr, "Could not allocate resampler context\n");
-            exit(1);
-        }
+    ost->swr_ctx = swr_alloc();
+    if (!ost->swr_ctx) {
+        fprintf(stderr, "Could not allocate resampler context\n");
+        exit(1);
+    }
 
-        /* set options */
-        av_opt_set_int       (ost->swr_ctx, "in_channel_count",   c->channels,       0);
-        av_opt_set_int       (ost->swr_ctx, "in_sample_rate",     c->sample_rate,    0);
-        av_opt_set_sample_fmt(ost->swr_ctx, "in_sample_fmt",      AV_SAMPLE_FMT_S16, 0);
-        av_opt_set_int       (ost->swr_ctx, "out_channel_count",  c->channels,       0);
-        av_opt_set_int       (ost->swr_ctx, "out_sample_rate",    c->sample_rate,    0);
-        av_opt_set_sample_fmt(ost->swr_ctx, "out_sample_fmt",     c->sample_fmt,     0);
+    /* set options */
+    av_opt_set_chlayout  (ost->swr_ctx, "in_chlayout",       &c->ch_layout,      0);
+    av_opt_set_int       (ost->swr_ctx, "in_sample_rate",     c->sample_rate,    0);
+    av_opt_set_sample_fmt(ost->swr_ctx, "in_sample_fmt",      AV_SAMPLE_FMT_S16, 0);
+    av_opt_set_chlayout  (ost->swr_ctx, "out_chlayout",      &c->ch_layout,      0);
+    av_opt_set_int       (ost->swr_ctx, "out_sample_rate",    c->sample_rate,    0);
+    av_opt_set_sample_fmt(ost->swr_ctx, "out_sample_fmt",     c->sample_fmt,     0);
 
-        /* initialize the resampling context */
-        if ((ret = swr_init(ost->swr_ctx)) < 0) {
-            fprintf(stderr, "Failed to initialize the resampling context\n");
-            exit(1);
-        }
+    /* initialize the resampling context */
+    if ((ret = swr_init(ost->swr_ctx)) < 0) {
+        fprintf(stderr, "Failed to initialize the resampling context\n");
+        exit(1);
+    }
 }
 
 /* Prepare a 16 bit dummy audio frame of 'frame_size' samples and
@@ -271,13 +315,13 @@ static AVFrame *get_audio_frame(OutputStream *ost)
     int16_t *q = (int16_t*)frame->data[0];
 
     /* check if we want to generate more frames */
-    if (av_compare_ts(ost->next_pts, ost->st->codec->time_base,
-                      STREAM_DURATION, (AVRational){ 1, 1 }) >= 0)
+    if (av_compare_ts(ost->next_pts, ost->enc->time_base,
+                      STREAM_DURATION, (AVRational){ 1, 1 }) > 0)
         return NULL;
 
     for (j = 0; j <frame->nb_samples; j++) {
         v = (int)(sin(ost->t) * 10000);
-        for (i = 0; i < ost->st->codec->channels; i++)
+        for (i = 0; i < ost->enc->ch_layout.nb_channels; i++)
             *q++ = v;
         ost->t     += ost->tincr;
         ost->tincr += ost->tincr2;
@@ -296,23 +340,20 @@ static AVFrame *get_audio_frame(OutputStream *ost)
 static int write_audio_frame(AVFormatContext *oc, OutputStream *ost)
 {
     AVCodecContext *c;
-    AVPacket pkt = { 0 }; // data and size must be 0;
     AVFrame *frame;
     int ret;
-    int got_packet;
     int dst_nb_samples;
 
-    av_init_packet(&pkt);
-    c = ost->st->codec;
+    c = ost->enc;
 
     frame = get_audio_frame(ost);
 
     if (frame) {
         /* convert samples from native format to destination codec format, using the resampler */
-            /* compute destination number of samples */
-            dst_nb_samples = av_rescale_rnd(swr_get_delay(ost->swr_ctx, c->sample_rate) + frame->nb_samples,
-                                            c->sample_rate, c->sample_rate, AV_ROUND_UP);
-            av_assert0(dst_nb_samples == frame->nb_samples);
+        /* compute destination number of samples */
+        dst_nb_samples = av_rescale_rnd(swr_get_delay(ost->swr_ctx, c->sample_rate) + frame->nb_samples,
+                                        c->sample_rate, c->sample_rate, AV_ROUND_UP);
+        av_assert0(dst_nb_samples == frame->nb_samples);
 
         /* when we pass a frame to the encoder, it may keep a reference to it
          * internally;
@@ -322,36 +363,21 @@ static int write_audio_frame(AVFormatContext *oc, OutputStream *ost)
         if (ret < 0)
             exit(1);
 
-            /* convert to destination format */
-            ret = swr_convert(ost->swr_ctx,
-                              ost->frame->data, dst_nb_samples,
-                              (const uint8_t **)frame->data, frame->nb_samples);
-            if (ret < 0) {
-                fprintf(stderr, "Error while converting\n");
-                exit(1);
-            }
-            frame = ost->frame;
+        /* convert to destination format */
+        ret = swr_convert(ost->swr_ctx,
+                          ost->frame->data, dst_nb_samples,
+                          (const uint8_t **)frame->data, frame->nb_samples);
+        if (ret < 0) {
+            fprintf(stderr, "Error while converting\n");
+            exit(1);
+        }
+        frame = ost->frame;
 
         frame->pts = av_rescale_q(ost->samples_count, (AVRational){1, c->sample_rate}, c->time_base);
         ost->samples_count += dst_nb_samples;
     }
 
-    ret = avcodec_encode_audio2(c, &pkt, frame, &got_packet);
-    if (ret < 0) {
-        fprintf(stderr, "Error encoding audio frame: %s\n", av_err2str(ret));
-        exit(1);
-    }
-
-    if (got_packet) {
-        ret = write_frame(oc, &c->time_base, ost->st, &pkt);
-        if (ret < 0) {
-            fprintf(stderr, "Error while writing audio frame: %s\n",
-                    av_err2str(ret));
-            exit(1);
-        }
-    }
-
-    return (frame || got_packet) ? 0 : 1;
+    return write_frame(oc, c, ost->st, frame, ost->tmp_pkt);
 }
 
 /**************************************************************/
@@ -371,7 +397,7 @@ static AVFrame *alloc_picture(enum AVPixelFormat pix_fmt, int width, int height)
     picture->height = height;
 
     /* allocate the buffers for the frame data */
-    ret = av_frame_get_buffer(picture, 32);
+    ret = av_frame_get_buffer(picture, 0);
     if (ret < 0) {
         fprintf(stderr, "Could not allocate frame data.\n");
         exit(1);
@@ -380,10 +406,11 @@ static AVFrame *alloc_picture(enum AVPixelFormat pix_fmt, int width, int height)
     return picture;
 }
 
-static void open_video(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, AVDictionary *opt_arg)
+static void open_video(AVFormatContext *oc, const AVCodec *codec,
+                       OutputStream *ost, AVDictionary *opt_arg)
 {
     int ret;
-    AVCodecContext *c = ost->st->codec;
+    AVCodecContext *c = ost->enc;
     AVDictionary *opt = NULL;
 
     av_dict_copy(&opt, opt_arg, 0);
@@ -414,21 +441,20 @@ static void open_video(AVFormatContext *oc, AVCodec *codec, OutputStream *ost, A
             exit(1);
         }
     }
+
+    /* copy the stream parameters to the muxer */
+    ret = avcodec_parameters_from_context(ost->st->codecpar, c);
+    if (ret < 0) {
+        fprintf(stderr, "Could not copy the stream parameters\n");
+        exit(1);
+    }
 }
 
 /* Prepare a dummy image. */
 static void fill_yuv_image(AVFrame *pict, int frame_index,
                            int width, int height)
 {
-    int x, y, i, ret;
-
-    /* when we pass a frame to the encoder, it may keep a reference to it
-     * internally;
-     * make sure we do not overwrite it here
-     */
-    ret = av_frame_make_writable(pict);
-    if (ret < 0)
-        exit(1);
+    int x, y, i;
 
     i = frame_index;
 
@@ -448,12 +474,17 @@ static void fill_yuv_image(AVFrame *pict, int frame_index,
 
 static AVFrame *get_video_frame(OutputStream *ost)
 {
-    AVCodecContext *c = ost->st->codec;
+    AVCodecContext *c = ost->enc;
 
     /* check if we want to generate more frames */
-    if (av_compare_ts(ost->next_pts, ost->st->codec->time_base,
-                      STREAM_DURATION, (AVRational){ 1, 1 }) >= 0)
+    if (av_compare_ts(ost->next_pts, c->time_base,
+                      STREAM_DURATION, (AVRational){ 1, 1 }) > 0)
         return NULL;
+
+    /* when we pass a frame to the encoder, it may keep a reference to it
+     * internally; make sure we do not overwrite it here */
+    if (av_frame_make_writable(ost->frame) < 0)
+        exit(1);
 
     if (c->pix_fmt != AV_PIX_FMT_YUV420P) {
         /* as we only generate a YUV420P picture, we must convert it
@@ -471,9 +502,9 @@ static AVFrame *get_video_frame(OutputStream *ost)
             }
         }
         fill_yuv_image(ost->tmp_frame, ost->next_pts, c->width, c->height);
-        sws_scale(ost->sws_ctx,
-                  (const uint8_t * const *)ost->tmp_frame->data, ost->tmp_frame->linesize,
-                  0, c->height, ost->frame->data, ost->frame->linesize);
+        sws_scale(ost->sws_ctx, (const uint8_t * const *) ost->tmp_frame->data,
+                  ost->tmp_frame->linesize, 0, c->height, ost->frame->data,
+                  ost->frame->linesize);
     } else {
         fill_yuv_image(ost->frame, ost->next_pts, c->width, c->height);
     }
@@ -489,63 +520,15 @@ static AVFrame *get_video_frame(OutputStream *ost)
  */
 static int write_video_frame(AVFormatContext *oc, OutputStream *ost)
 {
-    int ret;
-    AVCodecContext *c;
-    AVFrame *frame;
-    int got_packet = 0;
-
-    c = ost->st->codec;
-
-    frame = get_video_frame(ost);
-
-    if (oc->oformat->flags & AVFMT_RAWPICTURE) {
-        /* a hack to avoid data copy with some raw video muxers */
-        AVPacket pkt;
-        av_init_packet(&pkt);
-
-        if (!frame)
-            return 1;
-
-        pkt.flags        |= AV_PKT_FLAG_KEY;
-        pkt.stream_index  = ost->st->index;
-        pkt.data          = (uint8_t *)frame;
-        pkt.size          = sizeof(AVPicture);
-
-        pkt.pts = pkt.dts = frame->pts;
-        av_packet_rescale_ts(&pkt, c->time_base, ost->st->time_base);
-
-        ret = av_interleaved_write_frame(oc, &pkt);
-    } else {
-        AVPacket pkt = { 0 };
-        av_init_packet(&pkt);
-
-        /* encode the image */
-        ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
-        if (ret < 0) {
-            fprintf(stderr, "Error encoding video frame: %s\n", av_err2str(ret));
-            exit(1);
-        }
-
-        if (got_packet) {
-            ret = write_frame(oc, &c->time_base, ost->st, &pkt);
-        } else {
-            ret = 0;
-        }
-    }
-
-    if (ret < 0) {
-        fprintf(stderr, "Error while writing video frame: %s\n", av_err2str(ret));
-        exit(1);
-    }
-
-    return (frame || got_packet) ? 0 : 1;
+    return write_frame(oc, ost->enc, ost->st, get_video_frame(ost), ost->tmp_pkt);
 }
 
 static void close_stream(AVFormatContext *oc, OutputStream *ost)
 {
-    avcodec_close(ost->st->codec);
+    avcodec_free_context(&ost->enc);
     av_frame_free(&ost->frame);
     av_frame_free(&ost->tmp_frame);
+    av_packet_free(&ost->tmp_pkt);
     sws_freeContext(ost->sws_ctx);
     swr_free(&ost->swr_ctx);
 }
@@ -556,17 +539,15 @@ static void close_stream(AVFormatContext *oc, OutputStream *ost)
 int main(int argc, char **argv)
 {
     OutputStream video_st = { 0 }, audio_st = { 0 };
+    const AVOutputFormat *fmt;
     const char *filename;
-    AVOutputFormat *fmt;
     AVFormatContext *oc;
-    AVCodec *audio_codec, *video_codec;
+    const AVCodec *audio_codec, *video_codec;
     int ret;
     int have_video = 0, have_audio = 0;
     int encode_video = 0, encode_audio = 0;
     AVDictionary *opt = NULL;
-
-    /* Initialize libavcodec, and register all codecs and formats. */
-    av_register_all();
+    int i;
 
     if (argc < 2) {
         printf("usage: %s output_file\n"
@@ -580,8 +561,9 @@ int main(int argc, char **argv)
     }
 
     filename = argv[1];
-    if (argc > 3 && !strcmp(argv[2], "-flags")) {
-        av_dict_set(&opt, argv[2]+1, argv[3], 0);
+    for (i = 2; i+1 < argc; i+=2) {
+        if (!strcmp(argv[i], "-flags") || !strcmp(argv[i], "-fflags"))
+            av_dict_set(&opt, argv[i]+1, argv[i+1], 0);
     }
 
     /* allocate the output media context */
@@ -639,18 +621,14 @@ int main(int argc, char **argv)
     while (encode_video || encode_audio) {
         /* select the stream to encode */
         if (encode_video &&
-            (!encode_audio || av_compare_ts(video_st.next_pts, video_st.st->codec->time_base,
-                                            audio_st.next_pts, audio_st.st->codec->time_base) <= 0)) {
+            (!encode_audio || av_compare_ts(video_st.next_pts, video_st.enc->time_base,
+                                            audio_st.next_pts, audio_st.enc->time_base) <= 0)) {
             encode_video = !write_video_frame(oc, &video_st);
         } else {
             encode_audio = !write_audio_frame(oc, &audio_st);
         }
     }
 
-    /* Write the trailer, if any. The trailer must be written before you
-     * close the CodecContexts open when you wrote the header; otherwise
-     * av_write_trailer() may try to use memory that was freed on
-     * av_codec_close(). */
     av_write_trailer(oc);
 
     /* Close each codec. */

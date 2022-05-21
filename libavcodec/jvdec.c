@@ -29,6 +29,7 @@
 
 #include "avcodec.h"
 #include "blockdsp.h"
+#include "codec_internal.h"
 #include "get_bits.h"
 #include "internal.h"
 
@@ -143,8 +144,8 @@ static inline void decode8x8(GetBitContext *gb, uint8_t *dst, int linesize,
     }
 }
 
-static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
-                        AVPacket *avpkt)
+static int decode_frame(AVCodecContext *avctx, AVFrame *rframe,
+                        int *got_frame, AVPacket *avpkt)
 {
     JvContext *s = avctx->priv_data;
     const uint8_t *buf = avpkt->data;
@@ -163,12 +164,18 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
             av_log(avctx, AV_LOG_ERROR, "video size %d invalid\n", video_size);
             return AVERROR_INVALIDDATA;
         }
-        if ((ret = ff_reget_buffer(avctx, s->frame)) < 0)
-            return ret;
 
         if (video_type == 0 || video_type == 1) {
             GetBitContext gb;
             init_get_bits(&gb, buf, 8 * video_size);
+
+            if ((ret = ff_reget_buffer(avctx, s->frame, 0)) < 0)
+                return ret;
+
+            if (avctx->height/8 * (avctx->width/8) > 4 * video_size) {
+                av_log(avctx, AV_LOG_ERROR, "Insufficient input data for dimensions\n");
+                return AVERROR_INVALIDDATA;
+            }
 
             for (j = 0; j < avctx->height; j += 8)
                 for (i = 0; i < avctx->width; i += 8)
@@ -179,6 +186,11 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
             buf += video_size;
         } else if (video_type == 2) {
             int v = *buf++;
+
+            av_frame_unref(s->frame);
+            if ((ret = ff_get_buffer(avctx, s->frame, AV_GET_BUFFER_FLAG_REF)) < 0)
+                return ret;
+
             for (j = 0; j < avctx->height; j++)
                 memset(s->frame->data[0] + j * s->frame->linesize[0],
                        v, avctx->width);
@@ -205,7 +217,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
         s->palette_has_changed        = 0;
         memcpy(s->frame->data[1], s->palette, AVPALETTE_SIZE);
 
-        if ((ret = av_frame_ref(data, s->frame)) < 0)
+        if ((ret = av_frame_ref(rframe, s->frame)) < 0)
             return ret;
         *got_frame = 1;
     }
@@ -222,14 +234,15 @@ static av_cold int decode_close(AVCodecContext *avctx)
     return 0;
 }
 
-AVCodec ff_jv_decoder = {
-    .name           = "jv",
-    .long_name      = NULL_IF_CONFIG_SMALL("Bitmap Brothers JV video"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_JV,
+const FFCodec ff_jv_decoder = {
+    .p.name         = "jv",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Bitmap Brothers JV video"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_JV,
     .priv_data_size = sizeof(JvContext),
     .init           = decode_init,
     .close          = decode_close,
-    .decode         = decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    FF_CODEC_DECODE_CB(decode_frame),
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

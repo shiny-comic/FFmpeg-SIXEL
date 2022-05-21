@@ -27,86 +27,97 @@
  * MSMPEG4 backend for encoder and decoder
  */
 
+#include "config_components.h"
+
+#include "libavutil/thread.h"
+
 #include "avcodec.h"
 #include "idctdsp.h"
 #include "mpegvideo.h"
 #include "msmpeg4.h"
 #include "libavutil/x86/asm.h"
-#include "h263.h"
-#include "mpeg4video.h"
+#include "mpeg4videodata.h"
 #include "msmpeg4data.h"
+#include "mpegvideodata.h"
 #include "vc1data.h"
 #include "libavutil/imgutils.h"
 
 /*
- * You can also call this codec : MPEG4 with a twist !
+ * You can also call this codec: MPEG-4 with a twist!
  *
  * TODO:
  *        - (encoding) select best mv table (two choices)
  *        - (encoding) select best vlc/dc table
  */
 
-/* This table is practically identical to the one from h263
+/* This table is practically identical to the one from H.263
  * except that it is inverted. */
 static av_cold void init_h263_dc_for_msmpeg4(void)
 {
-        int level, uni_code, uni_len;
-
-        if(ff_v2_dc_chroma_table[255 + 256][1])
-            return;
-
-        for(level=-256; level<256; level++){
-            int size, v, l;
-            /* find number of bits */
-            size = 0;
-            v = abs(level);
-            while (v) {
-                v >>= 1;
-                    size++;
-            }
-
-            if (level < 0)
-                l= (-level) ^ ((1 << size) - 1);
-            else
-                l= level;
-
-            /* luminance h263 */
-            uni_code= ff_mpeg4_DCtab_lum[size][0];
-            uni_len = ff_mpeg4_DCtab_lum[size][1];
-            uni_code ^= (1<<uni_len)-1; //M$ does not like compatibility
-
-            if (size > 0) {
-                uni_code<<=size; uni_code|=l;
-                uni_len+=size;
-                if (size > 8){
-                    uni_code<<=1; uni_code|=1;
-                    uni_len++;
-                }
-            }
-            ff_v2_dc_lum_table[level + 256][0] = uni_code;
-            ff_v2_dc_lum_table[level + 256][1] = uni_len;
-
-            /* chrominance h263 */
-            uni_code= ff_mpeg4_DCtab_chrom[size][0];
-            uni_len = ff_mpeg4_DCtab_chrom[size][1];
-            uni_code ^= (1<<uni_len)-1; //M$ does not like compatibility
-
-            if (size > 0) {
-                uni_code<<=size; uni_code|=l;
-                uni_len+=size;
-                if (size > 8){
-                    uni_code<<=1; uni_code|=1;
-                    uni_len++;
-                }
-            }
-            ff_v2_dc_chroma_table[level + 256][0] = uni_code;
-            ff_v2_dc_chroma_table[level + 256][1] = uni_len;
-
+    for (int level = -256; level < 256; level++) {
+        int uni_code, uni_len;
+        int size, v, l;
+        /* find number of bits */
+        size = 0;
+        v = abs(level);
+        while (v) {
+            v >>= 1;
+            size++;
         }
+
+        if (level < 0)
+            l = (-level) ^ ((1 << size) - 1);
+        else
+            l = level;
+
+        /* luminance H.263 */
+        uni_code  = ff_mpeg4_DCtab_lum[size][0];
+        uni_len   = ff_mpeg4_DCtab_lum[size][1];
+        uni_code ^= (1 << uni_len) - 1; //M$ does not like compatibility
+
+        if (size > 0) {
+            uni_code <<= size; uni_code |= l;
+            uni_len   += size;
+            if (size > 8) {
+                uni_code <<= 1; uni_code |= 1;
+                uni_len++;
+            }
+        }
+        ff_v2_dc_lum_table[level + 256][0] = uni_code;
+        ff_v2_dc_lum_table[level + 256][1] = uni_len;
+
+        /* chrominance H.263 */
+        uni_code  = ff_mpeg4_DCtab_chrom[size][0];
+        uni_len   = ff_mpeg4_DCtab_chrom[size][1];
+        uni_code ^= (1 << uni_len) - 1; //M$ does not like compatibility
+
+        if (size > 0) {
+            uni_code <<= size; uni_code |= l;
+            uni_len   +=size;
+            if (size > 8) {
+                uni_code <<= 1; uni_code |= 1;
+                uni_len++;
+            }
+        }
+        ff_v2_dc_chroma_table[level + 256][0] = uni_code;
+        ff_v2_dc_chroma_table[level + 256][1] = uni_len;
+    }
+}
+
+static av_cold void msmpeg4_common_init_static(void)
+{
+    static uint8_t rl_table_store[NB_RL_TABLES][2][2 * MAX_RUN + MAX_LEVEL + 3];
+
+    for (int i = 0; i < NB_RL_TABLES; i++)
+        ff_rl_init(&ff_rl_table[i], rl_table_store[i]);
+
+    init_h263_dc_for_msmpeg4();
 }
 
 av_cold void ff_msmpeg4_common_init(MpegEncContext *s)
 {
+    static AVOnce init_static_once = AV_ONCE_INIT;
+
     switch(s->msmpeg4_version){
     case 1:
     case 2:
@@ -145,7 +156,7 @@ av_cold void ff_msmpeg4_common_init(MpegEncContext *s)
     }
     //Note the default tables are set in common_init in mpegvideo.c
 
-    init_h263_dc_for_msmpeg4();
+    ff_thread_once(&init_static_once, msmpeg4_common_init_static);
 }
 
 /* predict coded block */
@@ -251,7 +262,7 @@ int ff_msmpeg4_pred_dc(MpegEncContext *s, int n,
         c = FASTDIV((c + (scale >> 1)), scale);
     }
 #endif
-    /* XXX: WARNING: they did not choose the same test as MPEG4. This
+    /* XXX: WARNING: they did not choose the same test as MPEG-4. This
        is very important ! */
     if(s->msmpeg4_version>3){
         if(s->inter_intra_pred){

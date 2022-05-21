@@ -26,7 +26,6 @@
 
 #include "libavutil/common.h"
 #include "libavutil/intreadwrite.h"
-#include "avcodec.h"
 #include "h264qpel.h"
 #include "mathops.h"
 #include "pixels.h"
@@ -292,7 +291,10 @@ static const int rv40_bias[4][4] = {
 };
 
 #define RV40_CHROMA_MC(OPNAME, OP)\
-static void OPNAME ## rv40_chroma_mc4_c(uint8_t *dst/*align 8*/, uint8_t *src/*align 1*/, int stride, int h, int x, int y){\
+static void OPNAME ## rv40_chroma_mc4_c(uint8_t *dst /*align 8*/,\
+                                        uint8_t *src /*align 1*/,\
+                                        ptrdiff_t stride, int h, int x, int y)\
+{\
     const int A = (8-x) * (8-y);\
     const int B = (  x) * (8-y);\
     const int C = (8-x) * (  y);\
@@ -313,7 +315,7 @@ static void OPNAME ## rv40_chroma_mc4_c(uint8_t *dst/*align 8*/, uint8_t *src/*a
         }\
     }else{\
         const int E = B + C;\
-        const int step = C ? stride : 1;\
+        const ptrdiff_t step = C ? stride : 1;\
         for(i = 0; i < h; i++){\
             OP(dst[0], (A*src[0] + E*src[step+0] + bias));\
             OP(dst[1], (A*src[1] + E*src[step+1] + bias));\
@@ -325,7 +327,10 @@ static void OPNAME ## rv40_chroma_mc4_c(uint8_t *dst/*align 8*/, uint8_t *src/*a
     }\
 }\
 \
-static void OPNAME ## rv40_chroma_mc8_c(uint8_t *dst/*align 8*/, uint8_t *src/*align 1*/, int stride, int h, int x, int y){\
+static void OPNAME ## rv40_chroma_mc8_c(uint8_t *dst/*align 8*/,\
+                                        uint8_t *src/*align 1*/,\
+                                        ptrdiff_t stride, int h, int x, int y)\
+{\
     const int A = (8-x) * (8-y);\
     const int B = (  x) * (8-y);\
     const int C = (8-x) * (  y);\
@@ -350,7 +355,7 @@ static void OPNAME ## rv40_chroma_mc8_c(uint8_t *dst/*align 8*/, uint8_t *src/*a
         }\
     }else{\
         const int E = B + C;\
-        const int step = C ? stride : 1;\
+        const ptrdiff_t step = C ? stride : 1;\
         for(i = 0; i < h; i++){\
             OP(dst[0], (A*src[0] + E*src[step+0] + bias));\
             OP(dst[1], (A*src[1] + E*src[step+1] + bias));\
@@ -379,7 +384,7 @@ static void rv40_weight_func_rnd_ ## size (uint8_t *dst, uint8_t *src1, uint8_t 
 \
     for (j = 0; j < size; j++) {\
         for (i = 0; i < size; i++)\
-            dst[i] = (((w2 * src1[i]) >> 9) + ((w1 * src2[i]) >> 9) + 0x10) >> 5;\
+            dst[i] = ((((unsigned)w2 * src1[i]) >> 9) + (((unsigned)w1 * src2[i]) >> 9) + 0x10) >> 5;\
         src1 += stride;\
         src2 += stride;\
         dst  += stride;\
@@ -391,7 +396,7 @@ static void rv40_weight_func_nornd_ ## size (uint8_t *dst, uint8_t *src1, uint8_
 \
     for (j = 0; j < size; j++) {\
         for (i = 0; i < size; i++)\
-            dst[i] = (w2 * src1[i] + w1 * src2[i] + 0x10) >> 5;\
+            dst[i] = ((unsigned)w2 * src1[i] + (unsigned)w1 * src2[i] + 0x10) >> 5;\
         src1 += stride;\
         src2 += stride;\
         dst  += stride;\
@@ -449,7 +454,7 @@ static av_always_inline void rv40_weak_loop_filter(uint8_t *src,
         if (u > 3 - (filter_p1 && filter_q1))
             continue;
 
-        t <<= 2;
+        t *= 1 << 2;
         if (filter_p1 && filter_q1)
             t += src[-2*step] - src[1*step];
 

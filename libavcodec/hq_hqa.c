@@ -25,6 +25,8 @@
 
 #include "avcodec.h"
 #include "canopus.h"
+#include "codec_internal.h"
+#include "get_bits.h"
 #include "internal.h"
 
 #include "hq_hqa.h"
@@ -67,11 +69,11 @@ static int hq_decode_block(HQContext *c, GetBitContext *gb, int16_t block[64],
     memset(block, 0, 64 * sizeof(*block));
 
     if (!is_hqa) {
-        block[0] = get_sbits(gb, 9) << 6;
+        block[0] = get_sbits(gb, 9) * 64;
         q = ff_hq_quants[qsel][is_chroma][get_bits(gb, 2)];
     } else {
         q = ff_hq_quants[qsel][is_chroma][get_bits(gb, 2)];
-        block[0] = get_sbits(gb, 9) << 6;
+        block[0] = get_sbits(gb, 9) * 64;
     }
 
     for (;;) {
@@ -82,7 +84,7 @@ static int hq_decode_block(HQContext *c, GetBitContext *gb, int16_t block[64],
         pos += ff_hq_ac_skips[val];
         if (pos >= 64)
             break;
-        block[ff_zigzag_direct[pos]] = (ff_hq_ac_syms[val] * q[pos]) >> 12;
+        block[ff_zigzag_direct[pos]] = (int)(ff_hq_ac_syms[val] * (unsigned)q[pos]) >> 12;
         pos++;
     }
 
@@ -121,7 +123,7 @@ static int hq_decode_frame(HQContext *ctx, AVFrame *pic,
     uint32_t slice_off[21];
     int slice, start_off, next_off, i, ret;
 
-    if (prof_num >= NUM_HQ_PROFILES) {
+    if ((unsigned)prof_num >= NUM_HQ_PROFILES) {
         profile = &ff_hq_profile[0];
         avpriv_request_sample(ctx->avctx, "HQ Profile %d", prof_num);
     } else {
@@ -154,7 +156,7 @@ static int hq_decode_frame(HQContext *ctx, AVFrame *pic,
             slice_off[slice] >= slice_off[slice + 1] ||
             slice_off[slice + 1] > data_size) {
             av_log(ctx->avctx, AV_LOG_ERROR,
-                   "Invalid slice size %zu.\n", data_size);
+                   "Invalid slice size %"SIZE_SPECIFIER".\n", data_size);
             break;
         }
         init_get_bits(&gb, src + slice_off[slice],
@@ -179,6 +181,9 @@ static int hqa_decode_mb(HQContext *c, AVFrame *pic, int qgroup,
 {
     int flag = 0;
     int i, ret, cbp;
+
+    if (get_bits_left(gb) < 1)
+        return AVERROR_INVALIDDATA;
 
     cbp = get_vlc2(gb, c->hqa_cbp_vlc.table, 5, 1);
 
@@ -244,13 +249,18 @@ static int hqa_decode_frame(HQContext *ctx, AVFrame *pic, size_t data_size)
     int width, height, quant;
     const uint8_t *src = ctx->gbc.buffer;
 
+    if (bytestream2_get_bytes_left(&ctx->gbc) < 8 + 4*(num_slices + 1))
+        return AVERROR_INVALIDDATA;
+
     width  = bytestream2_get_be16(&ctx->gbc);
     height = bytestream2_get_be16(&ctx->gbc);
 
+    ret = ff_set_dimensions(ctx->avctx, width, height);
+    if (ret < 0)
+        return ret;
+
     ctx->avctx->coded_width         = FFALIGN(width,  16);
     ctx->avctx->coded_height        = FFALIGN(height, 16);
-    ctx->avctx->width               = width;
-    ctx->avctx->height              = height;
     ctx->avctx->bits_per_raw_sample = 8;
     ctx->avctx->pix_fmt             = AV_PIX_FMT_YUVA422P;
 
@@ -277,7 +287,7 @@ static int hqa_decode_frame(HQContext *ctx, AVFrame *pic, size_t data_size)
             slice_off[slice] >= slice_off[slice + 1] ||
             slice_off[slice + 1] > data_size) {
             av_log(ctx->avctx, AV_LOG_ERROR,
-                   "Invalid slice size %zu.\n", data_size);
+                   "Invalid slice size %"SIZE_SPECIFIER".\n", data_size);
             break;
         }
         init_get_bits(&gb, src + slice_off[slice],
@@ -291,14 +301,14 @@ static int hqa_decode_frame(HQContext *ctx, AVFrame *pic, size_t data_size)
     return 0;
 }
 
-static int hq_hqa_decode_frame(AVCodecContext *avctx, void *data,
+static int hq_hqa_decode_frame(AVCodecContext *avctx, AVFrame *pic,
                                int *got_frame, AVPacket *avpkt)
 {
     HQContext *ctx = avctx->priv_data;
-    AVFrame *pic = data;
     uint32_t info_tag;
     unsigned int data_size;
-    int tag, ret;
+    int ret;
+    unsigned tag;
 
     bytestream2_init(&ctx->gbc, avpkt->data, avpkt->size);
     if (bytestream2_get_bytes_left(&ctx->gbc) < 4 + 4) {
@@ -306,10 +316,12 @@ static int hq_hqa_decode_frame(AVCodecContext *avctx, void *data,
         return AVERROR_INVALIDDATA;
     }
 
-    info_tag = bytestream2_get_le32(&ctx->gbc);
+    info_tag = bytestream2_peek_le32(&ctx->gbc);
     if (info_tag == MKTAG('I', 'N', 'F', 'O')) {
-        int info_size = bytestream2_get_le32(&ctx->gbc);
-        if (bytestream2_get_bytes_left(&ctx->gbc) < info_size) {
+        int info_size;
+        bytestream2_skip(&ctx->gbc, 4);
+        info_size = bytestream2_get_le32(&ctx->gbc);
+        if (info_size < 0 || bytestream2_get_bytes_left(&ctx->gbc) < info_size) {
             av_log(avctx, AV_LOG_ERROR, "Invalid INFO size (%d).\n", info_size);
             return AVERROR_INVALIDDATA;
         }
@@ -369,16 +381,16 @@ static av_cold int hq_hqa_decode_close(AVCodecContext *avctx)
     return 0;
 }
 
-AVCodec ff_hq_hqa_decoder = {
-    .name           = "hq_hqa",
-    .long_name      = NULL_IF_CONFIG_SMALL("Canopus HQ/HQA"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_HQ_HQA,
+const FFCodec ff_hq_hqa_decoder = {
+    .p.name         = "hq_hqa",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Canopus HQ/HQA"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_HQ_HQA,
     .priv_data_size = sizeof(HQContext),
     .init           = hq_hqa_decode_init,
-    .decode         = hq_hqa_decode_frame,
+    FF_CODEC_DECODE_CB(hq_hqa_decode_frame),
     .close          = hq_hqa_decode_close,
-    .capabilities   = CODEC_CAP_DR1,
+    .p.capabilities = AV_CODEC_CAP_DR1,
     .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
                       FF_CODEC_CAP_INIT_CLEANUP,
 };

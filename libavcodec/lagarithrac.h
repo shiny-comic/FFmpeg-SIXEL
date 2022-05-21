@@ -31,7 +31,6 @@
 #define AVCODEC_LAGARITHRAC_H
 
 #include <stdint.h>
-#include "libavutil/common.h"
 #include "libavutil/intreadwrite.h"
 #include "avcodec.h"
 #include "get_bits.h"
@@ -46,6 +45,9 @@ typedef struct lag_rac {
     const uint8_t *bytestream_start;  /**< Start of input bytestream. */
     const uint8_t *bytestream;        /**< Current position in input bytestream. */
     const uint8_t *bytestream_end;    /**< End position of input bytestream. */
+
+    int overread;
+#define MAX_OVERREAD 4
 
     uint32_t prob[258];         /**< Table of cumulative probability for each symbol. */
     uint8_t  range_hash[1024];   /**< Hash table mapping upper byte to approximate symbol. */
@@ -62,6 +64,8 @@ static inline void lag_rac_refill(lag_rac *l)
         l->low |= 0xff & (AV_RB16(l->bytestream) >> 1);
         if (l->bytestream < l->bytestream_end)
             l->bytestream++;
+        else
+            l->overread++;
     }
 }
 

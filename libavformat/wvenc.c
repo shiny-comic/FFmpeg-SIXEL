@@ -30,10 +30,10 @@ typedef struct WvMuxContext {
     int64_t samples;
 } WvMuxContext;
 
-static av_cold int wv_write_header(AVFormatContext *ctx)
+static av_cold int wv_init(AVFormatContext *ctx)
 {
     if (ctx->nb_streams > 1 ||
-        ctx->streams[0]->codec->codec_id != AV_CODEC_ID_WAVPACK) {
+        ctx->streams[0]->codecpar->codec_id != AV_CODEC_ID_WAVPACK) {
         av_log(ctx, AV_LOG_ERROR, "This muxer only supports a single WavPack stream.\n");
         return AVERROR(EINVAL);
     }
@@ -64,7 +64,7 @@ static av_cold int wv_write_trailer(AVFormatContext *ctx)
     WvMuxContext *s = ctx->priv_data;
 
     /* update total number of samples in the first block */
-    if (ctx->pb->seekable && s->samples &&
+    if ((ctx->pb->seekable & AVIO_SEEKABLE_NORMAL) && s->samples &&
         s->samples < UINT32_MAX) {
         int64_t pos = avio_tell(ctx->pb);
         avio_seek(ctx->pb, 12, SEEK_SET);
@@ -76,7 +76,7 @@ static av_cold int wv_write_trailer(AVFormatContext *ctx)
     return 0;
 }
 
-AVOutputFormat ff_wv_muxer = {
+const AVOutputFormat ff_wv_muxer = {
     .name              = "wv",
     .long_name         = NULL_IF_CONFIG_SMALL("raw WavPack"),
     .mime_type         = "audio/x-wavpack",
@@ -84,7 +84,7 @@ AVOutputFormat ff_wv_muxer = {
     .priv_data_size    = sizeof(WvMuxContext),
     .audio_codec       = AV_CODEC_ID_WAVPACK,
     .video_codec       = AV_CODEC_ID_NONE,
-    .write_header      = wv_write_header,
+    .init              = wv_init,
     .write_packet      = wv_write_packet,
     .write_trailer     = wv_write_trailer,
     .flags             = AVFMT_NOTIMESTAMPS,

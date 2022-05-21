@@ -20,6 +20,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
 #include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "parser.h"
@@ -34,6 +36,7 @@ int ff_aac_ac3_parse(AVCodecParserContext *s1,
     ParseContext *pc = &s->pc;
     int len, i;
     int new_frame_start;
+    int got_frame = 0;
 
 get_next:
     i=END_NOT_FOUND;
@@ -51,12 +54,16 @@ get_next:
             if(len<=0){
                 i=END_NOT_FOUND;
             }else{
+                got_frame = 1;
                 s->state=0;
                 i-= s->header_size -1;
                 s->remaining_size = len;
                 if(!new_frame_start || pc->index+i<=0){
                     s->remaining_size += i;
                     goto get_next;
+                }
+                else if (i < 0) {
+                    s->remaining_size += i;
                 }
             }
         }
@@ -76,39 +83,40 @@ get_next:
     if(s->codec_id)
         avctx->codec_id = s->codec_id;
 
-    /* Due to backwards compatible HE-AAC the sample rate, channel count,
-       and total number of samples found in an AAC ADTS header are not
-       reliable. Bit rate is still accurate because the total frame duration in
-       seconds is still correct (as is the number of bits in the frame). */
-    if (avctx->codec_id != AV_CODEC_ID_AAC) {
-        avctx->sample_rate = s->sample_rate;
-
-        /* (E-)AC-3: allow downmixing to stereo or mono */
-#if FF_API_REQUEST_CHANNELS
+    if (got_frame) {
+        /* Due to backwards compatible HE-AAC the sample rate, channel count,
+           and total number of samples found in an AAC ADTS header are not
+           reliable. Bit rate is still accurate because the total frame
+           duration in seconds is still correct (as is the number of bits in
+           the frame). */
+        if (avctx->codec_id != AV_CODEC_ID_AAC) {
+            avctx->sample_rate = s->sample_rate;
+            if (!CONFIG_EAC3_DECODER || avctx->codec_id != AV_CODEC_ID_EAC3) {
+                av_channel_layout_uninit(&avctx->ch_layout);
+                if (s->channel_layout) {
+                    av_channel_layout_from_mask(&avctx->ch_layout, s->channel_layout);
+                } else {
+                    avctx->ch_layout.order       = AV_CHANNEL_ORDER_UNSPEC;
+                    avctx->ch_layout.nb_channels = s->channels;
+                }
+#if FF_API_OLD_CHANNEL_LAYOUT
 FF_DISABLE_DEPRECATION_WARNINGS
-        if (avctx->request_channels == 1)
-            avctx->request_channel_layout = AV_CH_LAYOUT_MONO;
-        else if (avctx->request_channels == 2)
-            avctx->request_channel_layout = AV_CH_LAYOUT_STEREO;
+                avctx->channels = avctx->ch_layout.nb_channels;
+                avctx->channel_layout = s->channel_layout;
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
-        if (s->channels > 1 &&
-            avctx->request_channel_layout == AV_CH_LAYOUT_MONO) {
-            avctx->channels       = 1;
-            avctx->channel_layout = AV_CH_LAYOUT_MONO;
-        } else if (s->channels > 2 &&
-                   avctx->request_channel_layout == AV_CH_LAYOUT_STEREO) {
-            avctx->channels       = 2;
-            avctx->channel_layout = AV_CH_LAYOUT_STEREO;
-        } else {
-            avctx->channels = s->channels;
-            avctx->channel_layout = s->channel_layout;
+            }
+            s1->duration = s->samples;
+            avctx->audio_service_type = s->service_type;
         }
-        s1->duration = s->samples;
-        avctx->audio_service_type = s->service_type;
-    }
 
-    avctx->bit_rate = s->bit_rate;
+        /* Calculate the average bit rate */
+        s->frame_number++;
+        if (!CONFIG_EAC3_DECODER || avctx->codec_id != AV_CODEC_ID_EAC3) {
+            avctx->bit_rate +=
+                (s->bit_rate - avctx->bit_rate) / s->frame_number;
+        }
+    }
 
     return i;
 }

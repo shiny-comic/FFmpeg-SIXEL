@@ -19,12 +19,15 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
 #include <stdarg.h>
 #include "avcodec.h"
 #include "libavutil/avstring.h"
 #include "libavutil/bprint.h"
 #include "ass_split.h"
 #include "ass.h"
+#include "codec_internal.h"
 
 
 #define SRT_STACK_SIZE 64
@@ -221,28 +224,37 @@ static const ASSCodesCallbacks srt_callbacks = {
     .end              = srt_end_cb,
 };
 
-static int srt_encode_frame(AVCodecContext *avctx,
-                            unsigned char *buf, int bufsize, const AVSubtitle *sub)
+static const ASSCodesCallbacks text_callbacks = {
+    .text             = srt_text_cb,
+    .new_line         = srt_new_line_cb,
+};
+
+static int encode_frame(AVCodecContext *avctx,
+                        unsigned char *buf, int bufsize, const AVSubtitle *sub,
+                        const ASSCodesCallbacks *cb)
 {
     SRTContext *s = avctx->priv_data;
     ASSDialog *dialog;
-    int i, num;
+    int i;
 
     av_bprint_clear(&s->buffer);
 
     for (i=0; i<sub->num_rects; i++) {
+        const char *ass = sub->rects[i]->ass;
 
         if (sub->rects[i]->type != SUBTITLE_ASS) {
             av_log(avctx, AV_LOG_ERROR, "Only SUBTITLE_ASS type supported.\n");
-            return AVERROR(ENOSYS);
+            return AVERROR(EINVAL);
         }
 
-        dialog = ff_ass_split_dialog(s->ass_ctx, sub->rects[i]->ass, 0, &num);
-        for (; dialog && num--; dialog++) {
-            s->alignment_applied = 0;
+        dialog = ff_ass_split_dialog(s->ass_ctx, ass);
+        if (!dialog)
+            return AVERROR(ENOMEM);
+        s->alignment_applied = 0;
+        if (avctx->codec_id == AV_CODEC_ID_SUBRIP)
             srt_style_apply(s, dialog->style);
-            ff_ass_split_override_codes(&srt_callbacks, s, dialog->text);
-        }
+        ff_ass_split_override_codes(cb, s, dialog->text);
+        ff_ass_free_dialog(&dialog);
     }
 
     if (!av_bprint_is_complete(&s->buffer))
@@ -252,11 +264,23 @@ static int srt_encode_frame(AVCodecContext *avctx,
 
     if (s->buffer.len > bufsize) {
         av_log(avctx, AV_LOG_ERROR, "Buffer too small for ASS event.\n");
-        return -1;
+        return AVERROR_BUFFER_TOO_SMALL;
     }
     memcpy(buf, s->buffer.str, s->buffer.len);
 
     return s->buffer.len;
+}
+
+static int srt_encode_frame(AVCodecContext *avctx,
+                               unsigned char *buf, int bufsize, const AVSubtitle *sub)
+{
+    return encode_frame(avctx, buf, bufsize, sub, &srt_callbacks);
+}
+
+static int text_encode_frame(AVCodecContext *avctx,
+                             unsigned char *buf, int bufsize, const AVSubtitle *sub)
+{
+    return encode_frame(avctx, buf, bufsize, sub, &text_callbacks);
 }
 
 static int srt_encode_close(AVCodecContext *avctx)
@@ -269,27 +293,43 @@ static int srt_encode_close(AVCodecContext *avctx)
 
 #if CONFIG_SRT_ENCODER
 /* deprecated encoder */
-AVCodec ff_srt_encoder = {
-    .name           = "srt",
-    .long_name      = NULL_IF_CONFIG_SMALL("SubRip subtitle"),
-    .type           = AVMEDIA_TYPE_SUBTITLE,
-    .id             = AV_CODEC_ID_SUBRIP,
+const FFCodec ff_srt_encoder = {
+    .p.name         = "srt",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("SubRip subtitle"),
+    .p.type         = AVMEDIA_TYPE_SUBTITLE,
+    .p.id           = AV_CODEC_ID_SUBRIP,
     .priv_data_size = sizeof(SRTContext),
     .init           = srt_encode_init,
-    .encode_sub     = srt_encode_frame,
+    FF_CODEC_ENCODE_SUB_CB(srt_encode_frame),
     .close          = srt_encode_close,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };
 #endif
 
 #if CONFIG_SUBRIP_ENCODER
-AVCodec ff_subrip_encoder = {
-    .name           = "subrip",
-    .long_name      = NULL_IF_CONFIG_SMALL("SubRip subtitle"),
-    .type           = AVMEDIA_TYPE_SUBTITLE,
-    .id             = AV_CODEC_ID_SUBRIP,
+const FFCodec ff_subrip_encoder = {
+    .p.name         = "subrip",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("SubRip subtitle"),
+    .p.type         = AVMEDIA_TYPE_SUBTITLE,
+    .p.id           = AV_CODEC_ID_SUBRIP,
     .priv_data_size = sizeof(SRTContext),
     .init           = srt_encode_init,
-    .encode_sub     = srt_encode_frame,
+    FF_CODEC_ENCODE_SUB_CB(srt_encode_frame),
     .close          = srt_encode_close,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
+};
+#endif
+
+#if CONFIG_TEXT_ENCODER
+const FFCodec ff_text_encoder = {
+    .p.name         = "text",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Raw text subtitle"),
+    .p.type         = AVMEDIA_TYPE_SUBTITLE,
+    .p.id           = AV_CODEC_ID_TEXT,
+    .priv_data_size = sizeof(SRTContext),
+    .init           = srt_encode_init,
+    FF_CODEC_ENCODE_SUB_CB(text_encode_frame),
+    .close          = srt_encode_close,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };
 #endif

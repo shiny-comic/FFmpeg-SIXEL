@@ -33,7 +33,7 @@
 #include "internal.h"
 #include "video.h"
 
-typedef struct {
+typedef struct TelecineContext {
     const AVClass *class;
     int first_field;
     char *pattern;
@@ -101,18 +101,11 @@ static av_cold int init(AVFilterContext *ctx)
 
 static int query_formats(AVFilterContext *ctx)
 {
-    AVFilterFormats *pix_fmts = NULL;
-    int fmt;
+    int reject_flags = AV_PIX_FMT_FLAG_BITSTREAM |
+                       AV_PIX_FMT_FLAG_HWACCEL   |
+                       AV_PIX_FMT_FLAG_PAL;
 
-    for (fmt = 0; av_pix_fmt_desc_get(fmt); fmt++) {
-        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(fmt);
-        if (!(desc->flags & AV_PIX_FMT_FLAG_HWACCEL ||
-              desc->flags & AV_PIX_FMT_FLAG_PAL     ||
-              desc->flags & AV_PIX_FMT_FLAG_BITSTREAM))
-            ff_add_format(&pix_fmts, fmt);
-    }
-
-    return ff_set_common_formats(ctx, pix_fmts);
+    return ff_set_common_formats(ctx, ff_formats_pixdesc_filter(0, reject_flags));
 }
 
 static int config_input(AVFilterLink *inlink)
@@ -133,7 +126,7 @@ static int config_input(AVFilterLink *inlink)
     if ((ret = av_image_fill_linesizes(s->stride, inlink->format, inlink->w)) < 0)
         return ret;
 
-    s->planeheight[1] = s->planeheight[2] = FF_CEIL_RSHIFT(inlink->h, desc->log2_chroma_h);
+    s->planeheight[1] = s->planeheight[2] = AV_CEIL_RSHIFT(inlink->h, desc->log2_chroma_h);
     s->planeheight[0] = s->planeheight[3] = inlink->h;
 
     s->nb_planes = av_pix_fmt_count_planes(inlink->format);
@@ -157,7 +150,6 @@ static int config_output(AVFilterLink *outlink)
     av_log(ctx, AV_LOG_VERBOSE, "FPS: %d/%d -> %d/%d\n",
            inlink->frame_rate.num, inlink->frame_rate.den, fps.num, fps.den);
 
-    outlink->flags |= FF_LINK_FLAG_REQUEST_LOOP;
     outlink->frame_rate = fps;
     outlink->time_base = av_mul_q(inlink->time_base, s->pts);
     av_log(ctx, AV_LOG_VERBOSE, "TB: %d/%d -> %d/%d\n",
@@ -190,6 +182,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
     }
 
     if (s->occupied) {
+        av_frame_make_writable(s->frame[nout]);
         for (i = 0; i < s->nb_planes; i++) {
             // fill in the EARLIER field from the buffered pic
             av_image_copy_plane(s->frame[nout]->data[i] + s->frame[nout]->linesize[i] * s->first_field,
@@ -206,6 +199,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
                                 s->stride[i],
                                 (s->planeheight[i] - !s->first_field + 1) / 2);
         }
+        s->frame[nout]->interlaced_frame = 1;
+        s->frame[nout]->top_field_first  = !s->first_field;
         nout++;
         len--;
         s->occupied = 0;
@@ -213,11 +208,14 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
 
     while (len >= 2) {
         // output THIS image as-is
+        av_frame_make_writable(s->frame[nout]);
         for (i = 0; i < s->nb_planes; i++)
             av_image_copy_plane(s->frame[nout]->data[i], s->frame[nout]->linesize[i],
                                 inpicref->data[i], inpicref->linesize[i],
                                 s->stride[i],
                                 s->planeheight[i]);
+        s->frame[nout]->interlaced_frame = inpicref->interlaced_frame;
+        s->frame[nout]->top_field_first  = inpicref->top_field_first;
         nout++;
         len -= 2;
     }
@@ -234,6 +232,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
 
     for (i = 0; i < nout; i++) {
         AVFrame *frame = av_frame_clone(s->frame[i]);
+        int interlaced = frame ? frame->interlaced_frame : 0;
+        int tff        = frame ? frame->top_field_first  : 0;
 
         if (!frame) {
             av_frame_free(&inpicref);
@@ -241,8 +241,10 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *inpicref)
         }
 
         av_frame_copy_props(frame, inpicref);
+        frame->interlaced_frame = interlaced;
+        frame->top_field_first  = tff;
         frame->pts = ((s->start_time == AV_NOPTS_VALUE) ? 0 : s->start_time) +
-                     av_rescale(outlink->frame_count, s->ts_unit.num,
+                     av_rescale(outlink->frame_count_in, s->ts_unit.num,
                                 s->ts_unit.den);
         ret = ff_filter_frame(outlink, frame);
     }
@@ -268,7 +270,6 @@ static const AVFilterPad telecine_inputs[] = {
         .filter_frame  = filter_frame,
         .config_props  = config_input,
     },
-    { NULL }
 };
 
 static const AVFilterPad telecine_outputs[] = {
@@ -277,17 +278,16 @@ static const AVFilterPad telecine_outputs[] = {
         .type          = AVMEDIA_TYPE_VIDEO,
         .config_props  = config_output,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_telecine = {
+const AVFilter ff_vf_telecine = {
     .name          = "telecine",
     .description   = NULL_IF_CONFIG_SMALL("Apply a telecine pattern."),
     .priv_size     = sizeof(TelecineContext),
     .priv_class    = &telecine_class,
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
-    .inputs        = telecine_inputs,
-    .outputs       = telecine_outputs,
+    FILTER_INPUTS(telecine_inputs),
+    FILTER_OUTPUTS(telecine_outputs),
+    FILTER_QUERY_FUNC(query_formats),
 };

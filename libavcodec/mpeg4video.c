@@ -1,5 +1,5 @@
 /*
- * MPEG4 decoder / encoder common code.
+ * MPEG-4 decoder / encoder common code
  * Copyright (c) 2000,2001 Fabrice Bellard
  * Copyright (c) 2002-2010 Michael Niedermayer <michaelni@gmx.at>
  *
@@ -20,12 +20,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/thread.h"
+
 #include "mpegutils.h"
 #include "mpegvideo.h"
 #include "mpeg4video.h"
 #include "mpeg4data.h"
 
-uint8_t ff_mpeg4_static_rl_table_store[3][2][2 * MAX_RUN + MAX_LEVEL + 3];
+static av_cold void mpeg4_init_rl_intra(void)
+{
+    static uint8_t mpeg4_rl_intra_table[2][2 * MAX_RUN + MAX_LEVEL + 3];
+    ff_rl_init(&ff_mpeg4_rl_intra, mpeg4_rl_intra_table);
+}
+
+av_cold void ff_mpeg4_init_rl_intra(void)
+{
+    static AVOnce init_static_once = AV_ONCE_INIT;
+    ff_thread_once(&init_static_once, mpeg4_init_rl_intra);
+}
 
 int ff_mpeg4_get_video_packet_prefix_length(MpegEncContext *s)
 {
@@ -57,7 +69,7 @@ void ff_mpeg4_clean_buffers(MpegEncContext *s)
     memset(s->ac_val[2] + c_xy, 0, (c_wrap     + 1) * 16 * sizeof(int16_t));
 
     /* clean MV */
-    // we can't clear the MVs as they might be needed by a b frame
+    // we can't clear the MVs as they might be needed by a B-frame
     s->last_mv[0][0][0] =
     s->last_mv[0][0][1] =
     s->last_mv[1][0][0] =
@@ -67,7 +79,7 @@ void ff_mpeg4_clean_buffers(MpegEncContext *s)
 #define tab_size ((signed)FF_ARRAY_ELEMS(s->direct_scale_mv[0]))
 #define tab_bias (tab_size / 2)
 
-// used by mpeg4 and rv10 decoder
+// used by MPEG-4 and rv10 decoder
 void ff_mpeg4_init_direct_mv(MpegEncContext *s)
 {
     int i;

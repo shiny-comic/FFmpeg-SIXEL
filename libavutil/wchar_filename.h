@@ -19,10 +19,11 @@
 #ifndef AVUTIL_WCHAR_FILENAME_H
 #define AVUTIL_WCHAR_FILENAME_H
 
-#if defined(_WIN32) && !defined(__MINGW32CE__)
+#ifdef _WIN32
 #include <windows.h>
 #include "mem.h"
 
+av_warn_unused_result
 static inline int utf8towchar(const char *filename_utf8, wchar_t **filename_w)
 {
     int num_chars;
@@ -31,7 +32,7 @@ static inline int utf8towchar(const char *filename_utf8, wchar_t **filename_w)
         *filename_w = NULL;
         return 0;
     }
-    *filename_w = (wchar_t *)av_mallocz_array(num_chars, sizeof(wchar_t));
+    *filename_w = (wchar_t *)av_calloc(num_chars, sizeof(wchar_t));
     if (!*filename_w) {
         errno = ENOMEM;
         return -1;

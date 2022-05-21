@@ -19,11 +19,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "avcodec.h"
-#include "internal.h"
-
 #define BITSTREAM_READER_LE
+#include "avcodec.h"
+#include "codec_internal.h"
 #include "get_bits.h"
+#include "internal.h"
 
 typedef union MacroBlock {
     uint16_t pixels[4];
@@ -145,7 +145,7 @@ static MacroBlock decode_macroblock(Escape124Context* s, GetBitContext* gb,
     unsigned block_index, depth;
     int value = get_bits1(gb);
     if (value) {
-        static const char transitions[3][2] = { {2, 1}, {0, 2}, {1, 0} };
+        static const int8_t transitions[3][2] = { {2, 1}, {0, 2}, {1, 0} };
         value = get_bits1(gb);
         *codebook_index = transitions[*codebook_index][value];
     }
@@ -155,7 +155,7 @@ static MacroBlock decode_macroblock(Escape124Context* s, GetBitContext* gb,
     // depth = 0 means that this shouldn't read any bits;
     // in theory, this is the same as get_bits(gb, 0), but
     // that doesn't actually work.
-    block_index = depth ? get_bits(gb, depth) : 0;
+    block_index = get_bitsz(gb, depth);
 
     if (*codebook_index == 1) {
         block_index += superblock_index << s->codebooks[1].depth;
@@ -196,13 +196,11 @@ static const uint16_t mask_matrix[] = {0x1,   0x2,   0x10,   0x20,
                                        0x100, 0x200, 0x1000, 0x2000,
                                        0x400, 0x800, 0x4000, 0x8000};
 
-static int escape124_decode_frame(AVCodecContext *avctx,
-                                  void *data, int *got_frame,
-                                  AVPacket *avpkt)
+static int escape124_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                                  int *got_frame, AVPacket *avpkt)
 {
     int buf_size = avpkt->size;
     Escape124Context *s = avctx->priv_data;
-    AVFrame *frame = data;
 
     GetBitContext gb;
     unsigned frame_flags, frame_size;
@@ -222,7 +220,11 @@ static int escape124_decode_frame(AVCodecContext *avctx,
 
     // This call also guards the potential depth reads for the
     // codebook unpacking.
-    if (get_bits_left(&gb) < 64)
+    // Check if the amount we will read minimally is available on input.
+    // The 64 represent the immediately next 2 frame_* elements read, the 23/4320
+    // represent a lower bound of the space needed for skipped superblocks. Non
+    // skipped SBs need more space.
+    if (get_bits_left(&gb) < 64 + s->num_superblocks * 23LL / 4320)
         return -1;
 
     frame_flags = get_bits_long(&gb, 32);
@@ -249,7 +251,11 @@ static int escape124_decode_frame(AVCodecContext *avctx,
             if (i == 2) {
                 // This codebook can be cut off at places other than
                 // powers of 2, leaving some of the entries undefined.
-                cb_size = get_bits_long(&gb, 20);
+                cb_size = get_bits(&gb, 20);
+                if (!cb_size) {
+                    av_log(avctx, AV_LOG_ERROR, "Invalid codebook size 0.\n");
+                    return AVERROR_INVALIDDATA;
+                }
                 cb_depth = av_log2(cb_size - 1) + 1;
             } else {
                 cb_depth = get_bits(&gb, 4);
@@ -264,6 +270,11 @@ static int escape124_decode_frame(AVCodecContext *avctx,
                     cb_size = s->num_superblocks << cb_depth;
                 }
             }
+            if (s->num_superblocks >= INT_MAX >> cb_depth) {
+                av_log(avctx, AV_LOG_ERROR, "Depth or num_superblocks are too large\n");
+                return AVERROR_INVALIDDATA;
+            }
+
             av_freep(&s->codebooks[i].blocks);
             s->codebooks[i] = unpack_codebook(&gb, cb_depth, cb_size);
             if (!s->codebooks[i].blocks)
@@ -364,14 +375,15 @@ static int escape124_decode_frame(AVCodecContext *avctx,
 }
 
 
-AVCodec ff_escape124_decoder = {
-    .name           = "escape124",
-    .long_name      = NULL_IF_CONFIG_SMALL("Escape 124"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_ESCAPE124,
+const FFCodec ff_escape124_decoder = {
+    .p.name         = "escape124",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Escape 124"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_ESCAPE124,
     .priv_data_size = sizeof(Escape124Context),
     .init           = escape124_decode_init,
     .close          = escape124_decode_close,
-    .decode         = escape124_decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
+    FF_CODEC_DECODE_CB(escape124_decode_frame),
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

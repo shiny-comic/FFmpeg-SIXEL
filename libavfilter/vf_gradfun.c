@@ -26,15 +26,15 @@
  *
  * Apply a boxblur debanding algorithm (based on the gradfun2db
  * AviSynth filter by prunedtree).
- * Foreach pixel, if it's within threshold of the blurred value, make it closer.
- * So now we have a smoothed and higher bitdepth version of all the shallow
- * gradients, while leaving detailed areas untouched.
+ * For each pixel, if it is within the threshold of the blurred value, make it
+ * closer. So now we have a smoothed and higher bitdepth version of all the
+ * shallow gradients, while leaving detailed areas untouched.
  * Dither it back to 8bit.
  */
 
 #include "libavutil/imgutils.h"
 #include "libavutil/common.h"
-#include "libavutil/cpu.h"
+#include "libavutil/mem_internal.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "avfilter.h"
@@ -145,21 +145,14 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_freep(&s->buf);
 }
 
-static int query_formats(AVFilterContext *ctx)
-{
-    static const enum AVPixelFormat pix_fmts[] = {
-        AV_PIX_FMT_YUV410P,            AV_PIX_FMT_YUV420P,
-        AV_PIX_FMT_GRAY8,              AV_PIX_FMT_YUV444P,
-        AV_PIX_FMT_YUV422P,            AV_PIX_FMT_YUV411P,
-        AV_PIX_FMT_YUV440P,
-        AV_PIX_FMT_GBRP,
-        AV_PIX_FMT_NONE
-    };
-    AVFilterFormats *fmts_list = ff_make_format_list(pix_fmts);
-    if (!fmts_list)
-        return AVERROR(ENOMEM);
-    return ff_set_common_formats(ctx, fmts_list);
-}
+static const enum AVPixelFormat pix_fmts[] = {
+    AV_PIX_FMT_YUV410P,            AV_PIX_FMT_YUV420P,
+    AV_PIX_FMT_GRAY8,              AV_PIX_FMT_YUV444P,
+    AV_PIX_FMT_YUV422P,            AV_PIX_FMT_YUV411P,
+    AV_PIX_FMT_YUV440P,
+    AV_PIX_FMT_GBRP,
+    AV_PIX_FMT_NONE
+};
 
 static int config_input(AVFilterLink *inlink)
 {
@@ -173,8 +166,8 @@ static int config_input(AVFilterLink *inlink)
     if (!s->buf)
         return AVERROR(ENOMEM);
 
-    s->chroma_w = FF_CEIL_RSHIFT(inlink->w, hsub);
-    s->chroma_h = FF_CEIL_RSHIFT(inlink->h, vsub);
+    s->chroma_w = AV_CEIL_RSHIFT(inlink->w, hsub);
+    s->chroma_h = AV_CEIL_RSHIFT(inlink->h, vsub);
     s->chroma_r = av_clip(((((s->radius >> hsub) + (s->radius >> vsub)) / 2 ) + 1) & ~1, 4, 32);
 
     return 0;
@@ -240,7 +233,6 @@ static const AVFilterPad avfilter_vf_gradfun_inputs[] = {
         .config_props = config_input,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad avfilter_vf_gradfun_outputs[] = {
@@ -248,18 +240,17 @@ static const AVFilterPad avfilter_vf_gradfun_outputs[] = {
         .name = "default",
         .type = AVMEDIA_TYPE_VIDEO,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_gradfun = {
+const AVFilter ff_vf_gradfun = {
     .name          = "gradfun",
     .description   = NULL_IF_CONFIG_SMALL("Debands video quickly using gradients."),
     .priv_size     = sizeof(GradFunContext),
     .priv_class    = &gradfun_class,
     .init          = init,
     .uninit        = uninit,
-    .query_formats = query_formats,
-    .inputs        = avfilter_vf_gradfun_inputs,
-    .outputs       = avfilter_vf_gradfun_outputs,
+    FILTER_INPUTS(avfilter_vf_gradfun_inputs),
+    FILTER_OUTPUTS(avfilter_vf_gradfun_outputs),
+    FILTER_PIXFMTS_ARRAY(pix_fmts),
     .flags         = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC,
 };

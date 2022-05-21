@@ -22,11 +22,9 @@
 #ifndef AVFORMAT_TLS_H
 #define AVFORMAT_TLS_H
 
-#include "config.h"
-#include "url.h"
 #include "libavutil/opt.h"
 
-#define CONFIG_TLS_PROTOCOL (CONFIG_TLS_GNUTLS_PROTOCOL | CONFIG_TLS_OPENSSL_PROTOCOL)
+#include "url.h"
 
 typedef struct TLSShared {
     char *ca_file;
@@ -35,7 +33,10 @@ typedef struct TLSShared {
     char *key_file;
     int listen;
 
-    char host[200];
+    char *host;
+    char *http_proxy;
+
+    char underlying_host[200];
     int numerichost;
 
     URLContext *tcp;
@@ -48,7 +49,9 @@ typedef struct TLSShared {
     {"tls_verify", "Verify the peer certificate",         offsetof(pstruct, options_field . verify),    AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, .flags = TLS_OPTFL }, \
     {"cert_file",  "Certificate file",                    offsetof(pstruct, options_field . cert_file), AV_OPT_TYPE_STRING, .flags = TLS_OPTFL }, \
     {"key_file",   "Private key file",                    offsetof(pstruct, options_field . key_file),  AV_OPT_TYPE_STRING, .flags = TLS_OPTFL }, \
-    {"listen",     "Listen for incoming connections",     offsetof(pstruct, options_field . listen),    AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, .flags = TLS_OPTFL }
+    {"listen",     "Listen for incoming connections",     offsetof(pstruct, options_field . listen),    AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, .flags = TLS_OPTFL }, \
+    {"verifyhost", "Verify against a specific hostname",  offsetof(pstruct, options_field . host),      AV_OPT_TYPE_STRING, .flags = TLS_OPTFL }, \
+    {"http_proxy", "Set proxy to tunnel through",         offsetof(pstruct, options_field . http_proxy), AV_OPT_TYPE_STRING, .flags = TLS_OPTFL }
 
 int ff_tls_open_underlying(TLSShared *c, URLContext *parent, const char *uri, AVDictionary **options);
 

@@ -26,7 +26,7 @@
  * @author Luca Abeni ( lucabe72 email it )
  * @author Benoit Fouet ( benoit fouet free fr )
  *
- * This avdevice encoder allows to play audio to an ALSA (Advanced Linux
+ * This avdevice encoder can play audio to an ALSA (Advanced Linux
  * Sound Architecture) device.
  *
  * The filename parameter is the name of an ALSA PCM device capable of
@@ -44,6 +44,7 @@
 
 
 #include "libavformat/internal.h"
+#include "libavformat/mux.h"
 #include "avdevice.h"
 #include "alsa.h"
 
@@ -55,20 +56,20 @@ static av_cold int audio_write_header(AVFormatContext *s1)
     enum AVCodecID codec_id;
     int res;
 
-    if (s1->nb_streams != 1 || s1->streams[0]->codec->codec_type != AVMEDIA_TYPE_AUDIO) {
+    if (s1->nb_streams != 1 || s1->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
         av_log(s1, AV_LOG_ERROR, "Only a single audio stream is supported.\n");
         return AVERROR(EINVAL);
     }
     st = s1->streams[0];
 
-    sample_rate = st->codec->sample_rate;
-    codec_id    = st->codec->codec_id;
+    sample_rate = st->codecpar->sample_rate;
+    codec_id    = st->codecpar->codec_id;
     res = ff_alsa_open(s1, SND_PCM_STREAM_PLAYBACK, &sample_rate,
-        st->codec->channels, &codec_id);
-    if (sample_rate != st->codec->sample_rate) {
+        st->codecpar->ch_layout.nb_channels, &codec_id);
+    if (sample_rate != st->codecpar->sample_rate) {
         av_log(s1, AV_LOG_ERROR,
                "sample rate %d not available, nearest is %d\n",
-               st->codec->sample_rate, sample_rate);
+               st->codecpar->sample_rate, sample_rate);
         goto fail;
     }
     avpriv_set_pts_info(st, 64, 1, sample_rate);
@@ -124,13 +125,13 @@ static int audio_write_frame(AVFormatContext *s1, int stream_index,
 
     /* ff_alsa_open() should have accepted only supported formats */
     if ((flags & AV_WRITE_UNCODED_FRAME_QUERY))
-        return av_sample_fmt_is_planar(s1->streams[stream_index]->codec->sample_fmt) ?
+        return av_sample_fmt_is_planar(s1->streams[stream_index]->codecpar->format) ?
                AVERROR(EINVAL) : 0;
     /* set only used fields */
     pkt.data     = (*frame)->data[0];
     pkt.size     = (*frame)->nb_samples * s->frame_size;
     pkt.dts      = (*frame)->pkt_dts;
-    pkt.duration = av_frame_get_pkt_duration(*frame);
+    pkt.duration = (*frame)->pkt_duration;
     return audio_write_packet(s1, &pkt);
 }
 
@@ -151,13 +152,13 @@ static int audio_get_device_list(AVFormatContext *h, AVDeviceInfoList *device_li
 }
 
 static const AVClass alsa_muxer_class = {
-    .class_name     = "ALSA muxer",
+    .class_name     = "ALSA outdev",
     .item_name      = av_default_item_name,
     .version        = LIBAVUTIL_VERSION_INT,
     .category       = AV_CLASS_CATEGORY_DEVICE_AUDIO_OUTPUT,
 };
 
-AVOutputFormat ff_alsa_muxer = {
+const AVOutputFormat ff_alsa_muxer = {
     .name           = "alsa",
     .long_name      = NULL_IF_CONFIG_SMALL("ALSA audio output"),
     .priv_data_size = sizeof(AlsaData),

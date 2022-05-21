@@ -95,17 +95,11 @@ typedef struct FLACFrameInfo {
  * @param[out] avctx   codec context to set basic stream parameters
  * @param[out] s       where parsed information is stored
  * @param[in]  buffer  pointer to start of 34-byte streaminfo data
+ *
+ * @return negative error code on faiure or >= 0 on success
  */
-void ff_flac_parse_streaminfo(AVCodecContext *avctx, struct FLACStreaminfo *s,
+int ff_flac_parse_streaminfo(AVCodecContext *avctx, struct FLACStreaminfo *s,
                               const uint8_t *buffer);
-
-#if LIBAVCODEC_VERSION_MAJOR < 57
-void avpriv_flac_parse_streaminfo(AVCodecContext *avctx, struct FLACStreaminfo *s,
-                                  const uint8_t *buffer);
-int avpriv_flac_is_extradata_valid(AVCodecContext *avctx,
-                                   enum FLACExtradataFormat *format,
-                                   uint8_t **streaminfo_start);
-#endif
 
 /**
  * Validate the FLAC extradata.
@@ -137,7 +131,7 @@ int ff_flac_get_max_frame_size(int blocksize, int ch, int bps);
 int ff_flac_decode_frame_header(AVCodecContext *avctx, GetBitContext *gb,
                                 FLACFrameInfo *fi, int log_level_offset);
 
-void ff_flac_set_channel_layout(AVCodecContext *avctx);
+void ff_flac_set_channel_layout(AVCodecContext *avctx, int channels);
 
 /**
  * Parse the metadata block parameters from the header.

@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/attributes.h"
 #include "libavutil/x86/cpu.h"
 #include "libswresample/swresample_internal.h"
 #include "libswresample/audioconvert.h"
@@ -145,9 +146,11 @@ MULTI_CAPS_FUNC(SSE2, sse2)
                 ac->simd_f =  ff_unpack_2ch_int16_to_float_a_ssse3;
         }
     }
-    if(EXTERNAL_AVX(mm_flags)) {
+    if(EXTERNAL_AVX_FAST(mm_flags)) {
         if(   out_fmt == AV_SAMPLE_FMT_FLT  && in_fmt == AV_SAMPLE_FMT_S32 || out_fmt == AV_SAMPLE_FMT_FLTP && in_fmt == AV_SAMPLE_FMT_S32P)
             ac->simd_f =  ff_int32_to_float_a_avx;
+    }
+    if(EXTERNAL_AVX(mm_flags)) {
         if(channels == 6) {
             if(   out_fmt == AV_SAMPLE_FMT_FLT  && in_fmt == AV_SAMPLE_FMT_FLTP || out_fmt == AV_SAMPLE_FMT_S32 && in_fmt == AV_SAMPLE_FMT_S32P)
                 ac->simd_f =  ff_pack_6ch_float_to_float_a_avx;
@@ -172,7 +175,7 @@ MULTI_CAPS_FUNC(SSE2, sse2)
                 ac->simd_f =  ff_pack_8ch_float_to_int32_a_avx;
         }
     }
-    if(EXTERNAL_AVX2(mm_flags)) {
+    if(EXTERNAL_AVX2_FAST(mm_flags)) {
         if(   out_fmt == AV_SAMPLE_FMT_S32  && in_fmt == AV_SAMPLE_FMT_FLT || out_fmt == AV_SAMPLE_FMT_S32P && in_fmt == AV_SAMPLE_FMT_FLTP)
             ac->simd_f =  ff_float_to_int32_a_avx2;
     }

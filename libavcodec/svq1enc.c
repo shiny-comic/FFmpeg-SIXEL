@@ -27,12 +27,16 @@
  */
 
 #include "avcodec.h"
+#include "codec_internal.h"
+#include "encode.h"
 #include "hpeldsp.h"
 #include "me_cmp.h"
 #include "mpegvideo.h"
 #include "h263.h"
+#include "h263enc.h"
 #include "internal.h"
 #include "mpegutils.h"
+#include "packet_internal.h"
 #include "svq1.h"
 #include "svq1enc.h"
 #include "svq1enc_cb.h"
@@ -104,7 +108,9 @@ static int encode_block(SVQ1EncContext *s, uint8_t *src, uint8_t *ref,
     best_score = 0;
     // FIXME: Optimize, this does not need to be done multiple times.
     if (intra) {
-        codebook_sum   = svq1_intra_codebook_sum[level];
+        // level is 5 when encode_block is called from svq1_encode_plane
+        // and always < 4 when called recursively from this function.
+        codebook_sum   = level < 4 ? svq1_intra_codebook_sum[level] : NULL;
         codebook       = ff_svq1_intra_codebooks[level];
         mean_vlc       = ff_svq1_intra_mean_vlc;
         multistage_vlc = ff_svq1_intra_multistage_vlc[level];
@@ -117,7 +123,8 @@ static int encode_block(SVQ1EncContext *s, uint8_t *src, uint8_t *ref,
             }
         }
     } else {
-        codebook_sum   = svq1_inter_codebook_sum[level];
+        // level is 5 or < 4, see above for details.
+        codebook_sum   = level < 4 ? svq1_inter_codebook_sum[level] : NULL;
         codebook       = ff_svq1_inter_codebooks[level];
         mean_vlc       = ff_svq1_inter_mean_vlc + 256;
         multistage_vlc = ff_svq1_inter_multistage_vlc[level];
@@ -149,7 +156,7 @@ static int encode_block(SVQ1EncContext *s, uint8_t *src, uint8_t *ref,
                 vector = codebook + stage * size * 16 + i * size;
                 sqr    = s->ssd_int8_vs_int16(vector, block[stage], size);
                 diff   = block_sum[stage] - sum;
-                score  = sqr - (diff * (int64_t)diff >> (level + 3)); // FIXME: 64bit slooow
+                score  = sqr - (diff * (int64_t)diff >> (level + 3)); // FIXME: 64 bits slooow
                 if (score < best_vector_score) {
                     int mean = diff + (size >> 1) >> (level + 3);
                     av_assert2(mean > -300 && mean < 300);
@@ -246,14 +253,13 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
                              unsigned char *decoded_plane,
                              int width, int height, int src_stride, int stride)
 {
-    const AVFrame *f = s->avctx->coded_frame;
     int x, y;
     int i;
     int block_width, block_height;
     int level;
     int threshold[6];
     uint8_t *src     = s->scratchbuf + stride * 32;
-    const int lambda = (f->quality * f->quality) >>
+    const int lambda = (s->quality * s->quality) >>
                        (2 * FF_LAMBDA_SHIFT);
 
     /* figure out the acceptable level thresholds in advance */
@@ -264,14 +270,14 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
     block_width  = (width  + 15) / 16;
     block_height = (height + 15) / 16;
 
-    if (f->pict_type == AV_PICTURE_TYPE_P) {
+    if (s->pict_type == AV_PICTURE_TYPE_P) {
         s->m.avctx                         = s->avctx;
         s->m.current_picture_ptr           = &s->m.current_picture;
         s->m.last_picture_ptr              = &s->m.last_picture;
         s->m.last_picture.f->data[0]        = ref_plane;
         s->m.linesize                      =
         s->m.last_picture.f->linesize[0]    =
-        s->m.new_picture.f->linesize[0]     =
+        s->m.new_picture->linesize[0]      =
         s->m.current_picture.f->linesize[0] = stride;
         s->m.width                         = width;
         s->m.height                        = height;
@@ -280,12 +286,12 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
         s->m.mb_stride                     = s->m.mb_width + 1;
         s->m.b8_stride                     = 2 * s->m.mb_width + 1;
         s->m.f_code                        = 1;
-        s->m.pict_type                     = f->pict_type;
-        s->m.me_method                     = s->avctx->me_method;
+        s->m.pict_type                     = s->pict_type;
+        s->m.motion_est                    = s->motion_est;
         s->m.me.scene_change_score         = 0;
         // s->m.out_format                    = FMT_H263;
         // s->m.unrestricted_mv               = 1;
-        s->m.lambda                        = f->quality;
+        s->m.lambda                        = s->quality;
         s->m.qscale                        = s->m.lambda * 139 +
                                              FF_LAMBDA_SCALE * 64 >>
                                              FF_LAMBDA_SHIFT + 7;
@@ -321,7 +327,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
         s->m.me.dia_size      = s->avctx->dia_size;
         s->m.first_slice_line = 1;
         for (y = 0; y < block_height; y++) {
-            s->m.new_picture.f->data[0] = src - y * 16 * stride; // ugly
+            s->m.new_picture->data[0]  = src - y * 16 * stride; // ugly
             s->m.mb_y                  = y;
 
             for (i = 0; i < 16 && i + 16 * y < height; i++) {
@@ -343,7 +349,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
             s->m.first_slice_line = 0;
         }
 
-        ff_fix_long_p_mvs(&s->m);
+        ff_fix_long_p_mvs(&s->m, CANDIDATE_MB_TYPE_INTRA);
         ff_fix_long_mvs(&s->m, NULL, 0, s->m.p_mv_table, s->m.f_code,
                         CANDIDATE_MB_TYPE_INTER, 0);
     }
@@ -369,8 +375,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
             int score[4]     = { 0, 0, 0, 0 }, best;
             uint8_t *temp    = s->scratchbuf;
 
-            if (s->pb.buf_end - s->pb.buf -
-                (put_bits_count(&s->pb) >> 3) < 3000) { // FIXME: check size
+            if (put_bytes_left(&s->pb, 0) < 3000) { // FIXME: check size
                 av_log(s->avctx, AV_LOG_ERROR, "encoded frame too large\n");
                 return -1;
             }
@@ -378,13 +383,13 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
             s->m.mb_x = x;
             init_block_index(&s->m);
 
-            if (f->pict_type == AV_PICTURE_TYPE_I ||
+            if (s->pict_type == AV_PICTURE_TYPE_I ||
                 (s->m.mb_type[x + y * s->m.mb_stride] &
                  CANDIDATE_MB_TYPE_INTRA)) {
                 for (i = 0; i < 6; i++)
                     init_put_bits(&s->reorder_pb[i], reorder_buffer[0][i],
                                   7 * 32);
-                if (f->pict_type == AV_PICTURE_TYPE_P) {
+                if (s->pict_type == AV_PICTURE_TYPE_P) {
                     const uint8_t *vlc = ff_svq1_block_type_vlc[SVQ1_BLOCK_INTRA];
                     put_bits(&s->reorder_pb[5], vlc[1], vlc[0]);
                     score[0] = vlc[1] * lambda;
@@ -400,7 +405,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
 
             best = 0;
 
-            if (f->pict_type == AV_PICTURE_TYPE_P) {
+            if (s->pict_type == AV_PICTURE_TYPE_P) {
                 const uint8_t *vlc = ff_svq1_block_type_vlc[SVQ1_BLOCK_INTER];
                 int mx, my, pred_x, pred_y, dxy;
                 int16_t *motion_ptr;
@@ -469,7 +474,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
 
             if (best != 2)
             for (i = 5; i >= 0; i--)
-                avpriv_copy_bits(&s->pb, reorder_buffer[best][i],
+                ff_copy_bits(&s->pb, reorder_buffer[best][i],
                                  count[best][i]);
             if (best == 0)
                 s->hdsp.put_pixels_tab[0][0](decoded, temp, stride, 16);
@@ -484,9 +489,10 @@ static av_cold int svq1_encode_end(AVCodecContext *avctx)
     SVQ1EncContext *const s = avctx->priv_data;
     int i;
 
-    av_log(avctx, AV_LOG_DEBUG, "RD: %f\n",
-           s->rd_total / (double)(avctx->width * avctx->height *
-                                  avctx->frame_number));
+    if (avctx->frame_number)
+        av_log(avctx, AV_LOG_DEBUG, "RD: %f\n",
+               s->rd_total / (double)(avctx->width * avctx->height *
+                                      avctx->frame_number));
 
     s->m.mb_type = NULL;
     ff_mpv_common_end(&s->m);
@@ -505,7 +511,6 @@ static av_cold int svq1_encode_end(AVCodecContext *avctx)
 
     av_frame_free(&s->current_picture);
     av_frame_free(&s->last_picture);
-    av_frame_free(&avctx->coded_frame);
 
     return 0;
 }
@@ -515,15 +520,18 @@ static av_cold int svq1_encode_init(AVCodecContext *avctx)
     SVQ1EncContext *const s = avctx->priv_data;
     int ret;
 
+    if (avctx->width >= 4096 || avctx->height >= 4096) {
+        av_log(avctx, AV_LOG_ERROR, "Dimensions too large, maximum is 4095x4095\n");
+        return AVERROR(EINVAL);
+    }
+
     ff_hpeldsp_init(&s->hdsp, avctx->flags);
     ff_me_cmp_init(&s->mecc, avctx);
     ff_mpegvideoencdsp_init(&s->m.mpvencdsp, avctx);
 
-    avctx->coded_frame = av_frame_alloc();
     s->current_picture = av_frame_alloc();
     s->last_picture    = av_frame_alloc();
-    if (!avctx->coded_frame || !s->current_picture || !s->last_picture) {
-        svq1_encode_end(avctx);
+    if (!s->current_picture || !s->last_picture) {
         return AVERROR(ENOMEM);
     }
 
@@ -540,7 +548,6 @@ static av_cold int svq1_encode_init(AVCodecContext *avctx)
     s->m.avctx             = avctx;
 
     if ((ret = ff_mpv_common_init(&s->m)) < 0) {
-        svq1_encode_end(avctx);
         return ret;
     }
 
@@ -556,9 +563,8 @@ static av_cold int svq1_encode_init(AVCodecContext *avctx)
                                         s->y_block_height * sizeof(int32_t));
     s->ssd_int8_vs_int16   = ssd_int8_vs_int16_c;
 
-    if (!s->m.me.scratchpad || !s->m.me.map || !s->m.me.score_map ||
-        !s->mb_type || !s->dummy) {
-        svq1_encode_end(avctx);
+    if (!s->m.me.temp || !s->m.me.scratchpad || !s->m.me.map ||
+        !s->m.me.score_map || !s->mb_type || !s->dummy) {
         return AVERROR(ENOMEM);
     }
 
@@ -576,11 +582,11 @@ static int svq1_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                              const AVFrame *pict, int *got_packet)
 {
     SVQ1EncContext *const s = avctx->priv_data;
-    AVFrame *const p        = avctx->coded_frame;
     int i, ret;
 
-    if ((ret = ff_alloc_packet2(avctx, pkt, s->y_block_width * s->y_block_height *
-                             MAX_MB_BYTES*3 + FF_MIN_BUFFER_SIZE)) < 0)
+    ret = ff_alloc_packet(avctx, pkt, s->y_block_width * s->y_block_height *
+                          MAX_MB_BYTES * 3 + AV_INPUT_BUFFER_MIN_SIZE);
+    if (ret < 0)
         return ret;
 
     if (avctx->pix_fmt != AV_PIX_FMT_YUV410P) {
@@ -589,12 +595,12 @@ static int svq1_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     }
 
     if (!s->current_picture->data[0]) {
-        if ((ret = ff_get_buffer(avctx, s->current_picture, 0)) < 0) {
+        if ((ret = ff_encode_alloc_frame(avctx, s->current_picture)) < 0) {
             return ret;
         }
     }
     if (!s->last_picture->data[0]) {
-        ret = ff_get_buffer(avctx, s->last_picture, 0);
+        ret = ff_encode_alloc_frame(avctx, s->last_picture);
         if (ret < 0)
             return ret;
     }
@@ -608,46 +614,79 @@ static int svq1_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
     init_put_bits(&s->pb, pkt->data, pkt->size);
 
-    p->pict_type = avctx->gop_size && avctx->frame_number % avctx->gop_size ?
-                   AV_PICTURE_TYPE_P : AV_PICTURE_TYPE_I;
-    p->key_frame = p->pict_type == AV_PICTURE_TYPE_I;
-    p->quality   = pict->quality;
+    if (avctx->gop_size && (avctx->frame_number % avctx->gop_size))
+        s->pict_type = AV_PICTURE_TYPE_P;
+    else
+        s->pict_type = AV_PICTURE_TYPE_I;
+    s->quality = pict->quality;
 
-    svq1_write_header(s, p->pict_type);
-    for (i = 0; i < 3; i++)
-        if (svq1_encode_plane(s, i,
+    ff_side_data_set_encoder_stats(pkt, pict->quality, NULL, 0, s->pict_type);
+
+    svq1_write_header(s, s->pict_type);
+    for (i = 0; i < 3; i++) {
+        int ret = svq1_encode_plane(s, i,
                               pict->data[i],
                               s->last_picture->data[i],
                               s->current_picture->data[i],
                               s->frame_width  / (i ? 4 : 1),
                               s->frame_height / (i ? 4 : 1),
                               pict->linesize[i],
-                              s->current_picture->linesize[i]) < 0)
+                              s->current_picture->linesize[i]);
+        emms_c();
+        if (ret < 0) {
+            int j;
+            for (j = 0; j < i; j++) {
+                av_freep(&s->motion_val8[j]);
+                av_freep(&s->motion_val16[j]);
+            }
+            av_freep(&s->scratchbuf);
             return -1;
+        }
+    }
 
-    // avpriv_align_put_bits(&s->pb);
+    // align_put_bits(&s->pb);
     while (put_bits_count(&s->pb) & 31)
         put_bits(&s->pb, 1, 0);
 
     flush_put_bits(&s->pb);
 
-    pkt->size = put_bits_count(&s->pb) / 8;
-    if (p->pict_type == AV_PICTURE_TYPE_I)
+    pkt->size = put_bytes_output(&s->pb);
+    if (s->pict_type == AV_PICTURE_TYPE_I)
         pkt->flags |= AV_PKT_FLAG_KEY;
     *got_packet = 1;
 
     return 0;
 }
 
-AVCodec ff_svq1_encoder = {
-    .name           = "svq1",
-    .long_name      = NULL_IF_CONFIG_SMALL("Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_SVQ1,
+#define OFFSET(x) offsetof(struct SVQ1EncContext, x)
+#define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
+static const AVOption options[] = {
+    { "motion-est", "Motion estimation algorithm", OFFSET(motion_est), AV_OPT_TYPE_INT, { .i64 = FF_ME_EPZS }, FF_ME_ZERO, FF_ME_XONE, VE, "motion-est"},
+        { "zero", NULL, 0, AV_OPT_TYPE_CONST, { .i64 = FF_ME_ZERO }, 0, 0, FF_MPV_OPT_FLAGS, "motion-est" },
+        { "epzs", NULL, 0, AV_OPT_TYPE_CONST, { .i64 = FF_ME_EPZS }, 0, 0, FF_MPV_OPT_FLAGS, "motion-est" },
+        { "xone", NULL, 0, AV_OPT_TYPE_CONST, { .i64 = FF_ME_XONE }, 0, 0, FF_MPV_OPT_FLAGS, "motion-est" },
+
+    { NULL },
+};
+
+static const AVClass svq1enc_class = {
+    .class_name = "svq1enc",
+    .item_name  = av_default_item_name,
+    .option     = options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
+const FFCodec ff_svq1_encoder = {
+    .p.name         = "svq1",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_SVQ1,
     .priv_data_size = sizeof(SVQ1EncContext),
+    .p.priv_class   = &svq1enc_class,
     .init           = svq1_encode_init,
-    .encode2        = svq1_encode_frame,
+    FF_CODEC_ENCODE_CB(svq1_encode_frame),
     .close          = svq1_encode_end,
-    .pix_fmts       = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV410P,
+    .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV410P,
                                                      AV_PIX_FMT_NONE },
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
 };

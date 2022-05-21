@@ -21,10 +21,12 @@
  */
 
 #include <inttypes.h>
+#include <stddef.h>
 
+#include "config.h"
 #include "libavutil/avassert.h"
 #include "libavutil/common.h"
-#include "avcodec.h"
+#include "libavutil/log.h"
 #include "acelp_filters.h"
 
 const int16_t ff_acelp_interp_filter[61] = { /* (0.15) */
@@ -70,7 +72,7 @@ void ff_acelp_interpolate(int16_t* out, const int16_t* in,
             v += in[n - i] * filter_coeffs[idx - frac_pos];
         }
         if (av_clip_int16(v >> 15) != (v >> 15))
-            av_log(NULL, AV_LOG_WARNING, "overflow that would need cliping in ff_acelp_interpolate()\n");
+            av_log(NULL, AV_LOG_WARNING, "overflow that would need clipping in ff_acelp_interpolate()\n");
         out[n] = v >> 15;
     }
 }

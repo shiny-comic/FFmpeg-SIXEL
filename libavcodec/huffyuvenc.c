@@ -28,11 +28,15 @@
  * huffyuv encoder
  */
 
+#include "config_components.h"
+
 #include "avcodec.h"
+#include "codec_internal.h"
+#include "encode.h"
 #include "huffyuv.h"
 #include "huffman.h"
 #include "huffyuvencdsp.h"
-#include "internal.h"
+#include "lossless_videoencdsp.h"
 #include "put_bits.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
@@ -41,9 +45,9 @@ static inline void diff_bytes(HYuvContext *s, uint8_t *dst,
                               const uint8_t *src0, const uint8_t *src1, int w)
 {
     if (s->bps <= 8) {
-        s->hencdsp.diff_bytes(dst, src0, src1, w);
+        s->llvidencdsp.diff_bytes(dst, src0, src1, w);
     } else {
-        s->llviddsp.diff_int16((uint16_t *)dst, (const uint16_t *)src0, (const uint16_t *)src1, s->n - 1, w);
+        s->hencdsp.diff_int16((uint16_t *)dst, (const uint16_t *)src0, (const uint16_t *)src1, s->n - 1, w);
     }
 }
 
@@ -51,42 +55,30 @@ static inline int sub_left_prediction(HYuvContext *s, uint8_t *dst,
                                       const uint8_t *src, int w, int left)
 {
     int i;
+    int min_width = FFMIN(w, 32);
+
     if (s->bps <= 8) {
-        if (w < 32) {
-            for (i = 0; i < w; i++) {
-                const int temp = src[i];
-                dst[i] = temp - left;
-                left   = temp;
-            }
-            return left;
-        } else {
-            for (i = 0; i < 16; i++) {
-                const int temp = src[i];
-                dst[i] = temp - left;
-                left   = temp;
-            }
-            s->hencdsp.diff_bytes(dst + 16, src + 16, src + 15, w - 16);
-            return src[w-1];
+        for (i = 0; i < min_width; i++) { /* scalar loop before dsp call */
+            const int temp = src[i];
+            dst[i] = temp - left;
+            left   = temp;
         }
+        if (w < 32)
+            return left;
+        s->llvidencdsp.diff_bytes(dst + 32, src + 32, src + 31, w - 32);
+        return src[w-1];
     } else {
         const uint16_t *src16 = (const uint16_t *)src;
         uint16_t       *dst16 = (      uint16_t *)dst;
-        if (w < 32) {
-            for (i = 0; i < w; i++) {
-                const int temp = src16[i];
-                dst16[i] = temp - left;
-                left   = temp;
-            }
-            return left;
-        } else {
-            for (i = 0; i < 16; i++) {
-                const int temp = src16[i];
-                dst16[i] = temp - left;
-                left   = temp;
-            }
-            s->llviddsp.diff_int16(dst16 + 16, src16 + 16, src16 + 15, s->n - 1, w - 16);
-            return src16[w-1];
+        for (i = 0; i < min_width; i++) { /* scalar loop before dsp call */
+            const int temp = src16[i];
+            dst16[i] = temp - left;
+            left   = temp;
         }
+        if (w < 32)
+            return left;
+        s->hencdsp.diff_int16(dst16 + 32, src16 + 32, src16 + 31, s->n - 1, w - 32);
+        return src16[w-1];
     }
 }
 
@@ -97,12 +89,13 @@ static inline void sub_left_prediction_bgr32(HYuvContext *s, uint8_t *dst,
 {
     int i;
     int r, g, b, a;
+    int min_width = FFMIN(w, 8);
     r = *red;
     g = *green;
     b = *blue;
     a = *alpha;
 
-    for (i = 0; i < FFMIN(w, 4); i++) {
+    for (i = 0; i < min_width; i++) {
         const int rt = src[i * 4 + R];
         const int gt = src[i * 4 + G];
         const int bt = src[i * 4 + B];
@@ -117,7 +110,7 @@ static inline void sub_left_prediction_bgr32(HYuvContext *s, uint8_t *dst,
         a = at;
     }
 
-    s->hencdsp.diff_bytes(dst + 16, src + 16, src + 12, w * 4 - 16);
+    s->llvidencdsp.diff_bytes(dst + 32, src + 32, src + 32 - 4, w * 4 - 32);
 
     *red   = src[(w - 1) * 4 + R];
     *green = src[(w - 1) * 4 + G];
@@ -146,7 +139,7 @@ static inline void sub_left_prediction_rgb24(HYuvContext *s, uint8_t *dst,
         b = bt;
     }
 
-    s->hencdsp.diff_bytes(dst + 48, src + 48, src + 48 - 3, w * 3 - 48);
+    s->llvidencdsp.diff_bytes(dst + 48, src + 48, src + 48 - 3, w * 3 - 48);
 
     *red   = src[(w - 1) * 3 + 0];
     *green = src[(w - 1) * 3 + 1];
@@ -156,9 +149,9 @@ static inline void sub_left_prediction_rgb24(HYuvContext *s, uint8_t *dst,
 static void sub_median_prediction(HYuvContext *s, uint8_t *dst, const uint8_t *src1, const uint8_t *src2, int w, int *left, int *left_top)
 {
     if (s->bps <= 8) {
-        s->hencdsp.sub_hfyu_median_pred(dst, src1, src2, w , left, left_top);
+        s->llvidencdsp.sub_median_pred(dst, src1, src2, w , left, left_top);
     } else {
-        s->llviddsp.sub_hfyu_median_pred_int16((uint16_t *)dst, (const uint16_t *)src1, (const uint16_t *)src2, s->n - 1, w , left, left_top);
+        s->hencdsp.sub_hfyu_median_pred_int16((uint16_t *)dst, (const uint16_t *)src1, (const uint16_t *)src2, s->n - 1, w , left, left_top);
     }
 }
 
@@ -217,12 +210,11 @@ static av_cold int encode_init(AVCodecContext *avctx)
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(avctx->pix_fmt);
 
     ff_huffyuv_common_init(avctx);
-    ff_huffyuvencdsp_init(&s->hencdsp);
+    ff_huffyuvencdsp_init(&s->hencdsp, avctx);
+    ff_llvidencdsp_init(&s->llvidencdsp);
 
     avctx->extradata = av_mallocz(3*MAX_N + 4);
-    if (!avctx->extradata)
-        return AVERROR(ENOMEM);
-    if (s->flags&CODEC_FLAG_PASS1) {
+    if (s->flags&AV_CODEC_FLAG_PASS1) {
 #define STATS_OUT_SIZE 21*MAX_N*3 + 4
         avctx->stats_out = av_mallocz(STATS_OUT_SIZE); // 21*256*3(%llu ) + 3(\n) + 1(0) = 16132
         if (!avctx->stats_out)
@@ -230,14 +222,10 @@ static av_cold int encode_init(AVCodecContext *avctx)
     }
     s->version = 2;
 
-    avctx->coded_frame = av_frame_alloc();
-    if (!avctx->coded_frame)
+    if (!avctx->extradata)
         return AVERROR(ENOMEM);
 
-    avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
-    avctx->coded_frame->key_frame = 1;
-
-    s->bps = desc->comp[0].depth_minus1 + 1;
+    s->bps = desc->comp[0].depth;
     s->yuv = !(desc->flags & AV_PIX_FMT_FLAG_RGB) && desc->nb_components >= 2;
     s->chroma = desc->nb_components > 2;
     s->alpha = !!(desc->flags & AV_PIX_FMT_FLAG_ALPHA);
@@ -270,7 +258,6 @@ static av_cold int encode_init(AVCodecContext *avctx)
     case AV_PIX_FMT_YUVA420P:
     case AV_PIX_FMT_YUVA422P:
     case AV_PIX_FMT_GBRAP:
-    case AV_PIX_FMT_GRAY8A:
     case AV_PIX_FMT_YUV420P9:
     case AV_PIX_FMT_YUV420P10:
     case AV_PIX_FMT_YUV420P12:
@@ -312,35 +299,21 @@ static av_cold int encode_init(AVCodecContext *avctx)
 
     avctx->bits_per_coded_sample = s->bitstream_bpp;
     s->decorrelate = s->bitstream_bpp >= 24 && !s->yuv && !(desc->flags & AV_PIX_FMT_FLAG_PLANAR);
-    s->predictor = avctx->prediction_method;
-    s->interlaced = avctx->flags&CODEC_FLAG_INTERLACED_ME ? 1 : 0;
-    if (avctx->context_model == 1) {
-        s->context = avctx->context_model;
-        if (s->flags & (CODEC_FLAG_PASS1|CODEC_FLAG_PASS2)) {
+    s->interlaced = avctx->flags & AV_CODEC_FLAG_INTERLACED_ME ? 1 : 0;
+    if (s->context) {
+        if (s->flags & (AV_CODEC_FLAG_PASS1 | AV_CODEC_FLAG_PASS2)) {
             av_log(avctx, AV_LOG_ERROR,
                    "context=1 is not compatible with "
                    "2 pass huffyuv encoding\n");
             return AVERROR(EINVAL);
         }
-    }else s->context= 0;
+    }
 
     if (avctx->codec->id == AV_CODEC_ID_HUFFYUV) {
         if (avctx->pix_fmt == AV_PIX_FMT_YUV420P) {
             av_log(avctx, AV_LOG_ERROR,
                    "Error: YV12 is not supported by huffyuv; use "
                    "vcodec=ffvhuff or format=422p\n");
-            return AVERROR(EINVAL);
-        }
-        if (avctx->context_model) {
-            av_log(avctx, AV_LOG_ERROR,
-                   "Error: per-frame huffman tables are not supported "
-                   "by huffyuv; use vcodec=ffvhuff\n");
-            return AVERROR(EINVAL);
-        }
-        if (s->version > 2) {
-            av_log(avctx, AV_LOG_ERROR,
-                   "Error: ver>2 is not supported "
-                   "by huffyuv; use vcodec=ffvhuff\n");
             return AVERROR(EINVAL);
         }
         if (s->interlaced != ( s->height > 288 ))
@@ -440,7 +413,7 @@ static int encode_422_bitstream(HYuvContext *s, int offset, int count)
     const uint8_t *u = s->temp[1] + offset / 2;
     const uint8_t *v = s->temp[2] + offset / 2;
 
-    if (s->pb.buf_end - s->pb.buf - (put_bits_count(&s->pb) >> 3) < 2 * 4 * count) {
+    if (put_bytes_left(&s->pb, 0) < 2 * 4 * count) {
         av_log(s->avctx, AV_LOG_ERROR, "encoded frame too large\n");
         return -1;
     }
@@ -453,7 +426,7 @@ static int encode_422_bitstream(HYuvContext *s, int offset, int count)
 
     count /= 2;
 
-    if (s->flags & CODEC_FLAG_PASS1) {
+    if (s->flags & AV_CODEC_FLAG_PASS1) {
         for(i = 0; i < count; i++) {
             LOAD4;
             s->stats[0][y0]++;
@@ -462,7 +435,7 @@ static int encode_422_bitstream(HYuvContext *s, int offset, int count)
             s->stats[2][v0]++;
         }
     }
-    if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)
+    if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)
         return 0;
     if (s->context) {
         for (i = 0; i < count; i++) {
@@ -492,7 +465,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
 {
     int i, count = width/2;
 
-    if (s->pb.buf_end - s->pb.buf - (put_bits_count(&s->pb) >> 3) < count * s->bps / 2) {
+    if (put_bytes_left(&s->pb, 0) < count * s->bps / 2) {
         av_log(s->avctx, AV_LOG_ERROR, "encoded frame too large\n");
         return -1;
     }
@@ -538,7 +511,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
             put_bits(&s->pb, 2, y1&3);
 
     if (s->bps <= 8) {
-    if (s->flags & CODEC_FLAG_PASS1) {
+    if (s->flags & AV_CODEC_FLAG_PASS1) {
         for (i = 0; i < count; i++) {
             LOAD2;
             STAT2;
@@ -548,7 +521,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
             STATEND;
         }
     }
-    if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)
+    if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)
         return 0;
 
     if (s->context) {
@@ -574,7 +547,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
     }
     } else if (s->bps <= 14) {
         int mask = s->n - 1;
-        if (s->flags & CODEC_FLAG_PASS1) {
+        if (s->flags & AV_CODEC_FLAG_PASS1) {
             for (i = 0; i < count; i++) {
                 LOAD2_14;
                 STAT2;
@@ -584,7 +557,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
                 STATEND;
             }
         }
-        if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)
+        if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)
             return 0;
 
         if (s->context) {
@@ -609,7 +582,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
             }
         }
     } else {
-        if (s->flags & CODEC_FLAG_PASS1) {
+        if (s->flags & AV_CODEC_FLAG_PASS1) {
             for (i = 0; i < count; i++) {
                 LOAD2_16;
                 STAT2_16;
@@ -619,7 +592,7 @@ static int encode_plane_bitstream(HYuvContext *s, int width, int plane)
                 STATEND_16;
             }
         }
-        if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)
+        if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)
             return 0;
 
         if (s->context) {
@@ -654,7 +627,7 @@ static int encode_gray_bitstream(HYuvContext *s, int count)
 {
     int i;
 
-    if (s->pb.buf_end - s->pb.buf - (put_bits_count(&s->pb) >> 3) < 4 * count) {
+    if (put_bytes_left(&s->pb, 0) < 4 * count) {
         av_log(s->avctx, AV_LOG_ERROR, "encoded frame too large\n");
         return -1;
     }
@@ -671,13 +644,13 @@ static int encode_gray_bitstream(HYuvContext *s, int count)
 
     count /= 2;
 
-    if (s->flags & CODEC_FLAG_PASS1) {
+    if (s->flags & AV_CODEC_FLAG_PASS1) {
         for (i = 0; i < count; i++) {
             LOAD2;
             STAT2;
         }
     }
-    if (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)
+    if (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)
         return 0;
 
     if (s->context) {
@@ -699,8 +672,7 @@ static inline int encode_bgra_bitstream(HYuvContext *s, int count, int planes)
 {
     int i;
 
-    if (s->pb.buf_end - s->pb.buf - (put_bits_count(&s->pb) >> 3) <
-        4 * planes * count) {
+    if (put_bytes_left(&s->pb, 0) < 4 * planes * count) {
         av_log(s->avctx, AV_LOG_ERROR, "encoded frame too large\n");
         return -1;
     }
@@ -725,13 +697,13 @@ static inline int encode_bgra_bitstream(HYuvContext *s, int count, int planes)
     if (planes == 4)                                                    \
         put_bits(&s->pb, s->len[2][a], s->bits[2][a]);
 
-    if ((s->flags & CODEC_FLAG_PASS1) &&
-        (s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)) {
+    if ((s->flags & AV_CODEC_FLAG_PASS1) &&
+        (s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)) {
         for (i = 0; i < count; i++) {
             LOAD_GBRA;
             STAT_BGRA;
         }
-    } else if (s->context || (s->flags & CODEC_FLAG_PASS1)) {
+    } else if (s->context || (s->flags & AV_CODEC_FLAG_PASS1)) {
         for (i = 0; i < count; i++) {
             LOAD_GBRA;
             STAT_BGRA;
@@ -759,7 +731,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     const AVFrame * const p = pict;
     int i, j, size = 0, ret;
 
-    if ((ret = ff_alloc_packet2(avctx, pkt, width * height * 3 * 4 + FF_MIN_BUFFER_SIZE)) < 0)
+    if ((ret = ff_alloc_packet(avctx, pkt, width * height * 3 * 4 + AV_INPUT_BUFFER_MIN_SIZE)) < 0)
         return ret;
 
     if (s->context) {
@@ -810,9 +782,9 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
             lefttopy = p->data[0][3];
             lefttopu = p->data[1][1];
             lefttopv = p->data[2][1];
-            s->hencdsp.sub_hfyu_median_pred(s->temp[0], p->data[0] + 4, p->data[0] + fake_ystride + 4, width  - 4, &lefty, &lefttopy);
-            s->hencdsp.sub_hfyu_median_pred(s->temp[1], p->data[1] + 2, p->data[1] + fake_ustride + 2, width2 - 2, &leftu, &lefttopu);
-            s->hencdsp.sub_hfyu_median_pred(s->temp[2], p->data[2] + 2, p->data[2] + fake_vstride + 2, width2 - 2, &leftv, &lefttopv);
+            s->llvidencdsp.sub_median_pred(s->temp[0], p->data[0] + 4, p->data[0] + fake_ystride + 4, width  - 4, &lefty, &lefttopy);
+            s->llvidencdsp.sub_median_pred(s->temp[1], p->data[1] + 2, p->data[1] + fake_ustride + 2, width2 - 2, &leftu, &lefttopu);
+            s->llvidencdsp.sub_median_pred(s->temp[2], p->data[2] + 2, p->data[2] + fake_vstride + 2, width2 - 2, &leftv, &lefttopv);
             encode_422_bitstream(s, 0, width - 4);
             y++; cy++;
 
@@ -822,7 +794,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                 if (s->bitstream_bpp == 12) {
                     while (2 * cy > y) {
                         ydst = p->data[0] + p->linesize[0] * y;
-                        s->hencdsp.sub_hfyu_median_pred(s->temp[0], ydst - fake_ystride, ydst, width, &lefty, &lefttopy);
+                        s->llvidencdsp.sub_median_pred(s->temp[0], ydst - fake_ystride, ydst, width, &lefty, &lefttopy);
                         encode_gray_bitstream(s, width);
                         y++;
                     }
@@ -832,9 +804,9 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                 udst = p->data[1] + p->linesize[1] * cy;
                 vdst = p->data[2] + p->linesize[2] * cy;
 
-                s->hencdsp.sub_hfyu_median_pred(s->temp[0], ydst - fake_ystride, ydst, width,  &lefty, &lefttopy);
-                s->hencdsp.sub_hfyu_median_pred(s->temp[1], udst - fake_ustride, udst, width2, &leftu, &lefttopu);
-                s->hencdsp.sub_hfyu_median_pred(s->temp[2], vdst - fake_vstride, vdst, width2, &leftv, &lefttopv);
+                s->llvidencdsp.sub_median_pred(s->temp[0], ydst - fake_ystride, ydst, width,  &lefty, &lefttopy);
+                s->llvidencdsp.sub_median_pred(s->temp[1], udst - fake_ustride, udst, width2, &leftu, &lefttopu);
+                s->llvidencdsp.sub_median_pred(s->temp[2], vdst - fake_vstride, vdst, width2, &leftv, &lefttopv);
 
                 encode_422_bitstream(s, 0, width);
             }
@@ -847,7 +819,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                     ydst = p->data[0] + p->linesize[0] * y;
 
                     if (s->predictor == PLANE && s->interlaced < y) {
-                        s->hencdsp.diff_bytes(s->temp[1], ydst, ydst - fake_ystride, width);
+                        s->llvidencdsp.diff_bytes(s->temp[1], ydst, ydst - fake_ystride, width);
 
                         lefty = sub_left_prediction(s, s->temp[0], s->temp[1], width , lefty);
                     } else {
@@ -863,9 +835,9 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                 vdst = p->data[2] + p->linesize[2] * cy;
 
                 if (s->predictor == PLANE && s->interlaced < cy) {
-                    s->hencdsp.diff_bytes(s->temp[1],          ydst, ydst - fake_ystride, width);
-                    s->hencdsp.diff_bytes(s->temp[2],          udst, udst - fake_ustride, width2);
-                    s->hencdsp.diff_bytes(s->temp[2] + width2, vdst, vdst - fake_vstride, width2);
+                    s->llvidencdsp.diff_bytes(s->temp[1],          ydst, ydst - fake_ystride, width);
+                    s->llvidencdsp.diff_bytes(s->temp[2],          udst, udst - fake_ustride, width2);
+                    s->llvidencdsp.diff_bytes(s->temp[2] + width2, vdst, vdst - fake_vstride, width2);
 
                     lefty = sub_left_prediction(s, s->temp[0], s->temp[1], width , lefty);
                     leftu = sub_left_prediction(s, s->temp[1], s->temp[2], width2, leftu);
@@ -898,7 +870,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         for (y = 1; y < s->height; y++) {
             uint8_t *dst = data + y*stride;
             if (s->predictor == PLANE && s->interlaced < y) {
-                s->hencdsp.diff_bytes(s->temp[1], dst, dst - fake_stride, width * 4);
+                s->llvidencdsp.diff_bytes(s->temp[1], dst, dst - fake_stride, width * 4);
                 sub_left_prediction_bgr32(s, s->temp[0], s->temp[1], width,
                                           &leftr, &leftg, &leftb, &lefta);
             } else {
@@ -926,7 +898,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         for (y = 1; y < s->height; y++) {
             uint8_t *dst = data + y * stride;
             if (s->predictor == PLANE && s->interlaced < y) {
-                s->hencdsp.diff_bytes(s->temp[1], dst, dst - fake_stride,
+                s->llvidencdsp.diff_bytes(s->temp[1], dst, dst - fake_stride,
                                       width * 3);
                 sub_left_prediction_rgb24(s, s->temp[0], s->temp[1], width,
                                           &leftr, &leftg, &leftb);
@@ -999,7 +971,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     put_bits(&s->pb, 15, 0);
     size /= 4;
 
-    if ((s->flags&CODEC_FLAG_PASS1) && (s->picture_number & 31) == 0) {
+    if ((s->flags & AV_CODEC_FLAG_PASS1) && (s->picture_number & 31) == 0) {
         int j;
         char *p = avctx->stats_out;
         char *end = p + STATS_OUT_SIZE;
@@ -1016,7 +988,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         }
     } else if (avctx->stats_out)
         avctx->stats_out[0] = '\0';
-    if (!(s->avctx->flags2 & CODEC_FLAG2_NO_OUTPUT)) {
+    if (!(s->avctx->flags2 & AV_CODEC_FLAG2_NO_OUTPUT)) {
         flush_put_bits(&s->pb);
         s->bdsp.bswap_buf((uint32_t *) pkt->data, (uint32_t *) pkt->data, size);
     }
@@ -1024,7 +996,6 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     s->picture_number++;
 
     pkt->size   = size * 4;
-    pkt->flags |= AV_PKT_FLAG_KEY;
     *got_packet = 1;
 
     return 0;
@@ -1036,47 +1007,60 @@ static av_cold int encode_end(AVCodecContext *avctx)
 
     ff_huffyuv_common_end(s);
 
-    av_freep(&avctx->extradata);
     av_freep(&avctx->stats_out);
-
-    av_frame_free(&avctx->coded_frame);
 
     return 0;
 }
 
-static const AVOption options[] = {
-    { "non_deterministic", "Allow multithreading for e.g. context=1 at the expense of determinism",
-      offsetof(HYuvContext, non_determ), AV_OPT_TYPE_INT, { .i64 = 1 },
-      0, 1, AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM },
+#define OFFSET(x) offsetof(HYuvContext, x)
+#define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
+
+#define COMMON_OPTIONS \
+    { "non_deterministic", "Allow multithreading for e.g. context=1 at the expense of determinism", \
+      OFFSET(non_determ), AV_OPT_TYPE_BOOL, { .i64 = 0 }, \
+      0, 1, VE }, \
+    { "pred", "Prediction method", OFFSET(predictor), AV_OPT_TYPE_INT, { .i64 = LEFT }, LEFT, MEDIAN, VE, "pred" }, \
+        { "left",   NULL, 0, AV_OPT_TYPE_CONST, { .i64 = LEFT },   INT_MIN, INT_MAX, VE, "pred" }, \
+        { "plane",  NULL, 0, AV_OPT_TYPE_CONST, { .i64 = PLANE },  INT_MIN, INT_MAX, VE, "pred" }, \
+        { "median", NULL, 0, AV_OPT_TYPE_CONST, { .i64 = MEDIAN }, INT_MIN, INT_MAX, VE, "pred" }, \
+
+static const AVOption normal_options[] = {
+    COMMON_OPTIONS
+    { NULL },
+};
+
+static const AVOption ff_options[] = {
+    COMMON_OPTIONS
+    { "context", "Set per-frame huffman tables", OFFSET(context), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE },
     { NULL },
 };
 
 static const AVClass normal_class = {
     .class_name = "huffyuv",
     .item_name  = av_default_item_name,
-    .option     = options,
+    .option     = normal_options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
 static const AVClass ff_class = {
     .class_name = "ffvhuff",
     .item_name  = av_default_item_name,
-    .option     = options,
+    .option     = ff_options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_huffyuv_encoder = {
-    .name           = "huffyuv",
-    .long_name      = NULL_IF_CONFIG_SMALL("Huffyuv / HuffYUV"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_HUFFYUV,
+const FFCodec ff_huffyuv_encoder = {
+    .p.name         = "huffyuv",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Huffyuv / HuffYUV"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_HUFFYUV,
     .priv_data_size = sizeof(HYuvContext),
     .init           = encode_init,
-    .encode2        = encode_frame,
+    FF_CODEC_ENCODE_CB(encode_frame),
     .close          = encode_end,
-    .capabilities   = CODEC_CAP_FRAME_THREADS | CODEC_CAP_INTRA_ONLY,
-    .priv_class     = &normal_class,
-    .pix_fmts       = (const enum AVPixelFormat[]){
+    .p.capabilities = AV_CODEC_CAP_FRAME_THREADS,
+    .p.priv_class   = &normal_class,
+    .p.pix_fmts     = (const enum AVPixelFormat[]){
         AV_PIX_FMT_YUV422P, AV_PIX_FMT_RGB24,
         AV_PIX_FMT_RGB32, AV_PIX_FMT_NONE
     },
@@ -1085,26 +1069,25 @@ AVCodec ff_huffyuv_encoder = {
 };
 
 #if CONFIG_FFVHUFF_ENCODER
-AVCodec ff_ffvhuff_encoder = {
-    .name           = "ffvhuff",
-    .long_name      = NULL_IF_CONFIG_SMALL("Huffyuv FFmpeg variant"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_FFVHUFF,
+const FFCodec ff_ffvhuff_encoder = {
+    .p.name         = "ffvhuff",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Huffyuv FFmpeg variant"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_FFVHUFF,
     .priv_data_size = sizeof(HYuvContext),
     .init           = encode_init,
-    .encode2        = encode_frame,
+    FF_CODEC_ENCODE_CB(encode_frame),
     .close          = encode_end,
-    .capabilities   = CODEC_CAP_FRAME_THREADS | CODEC_CAP_INTRA_ONLY,
-    .priv_class     = &ff_class,
-    .pix_fmts       = (const enum AVPixelFormat[]){
+    .p.capabilities = AV_CODEC_CAP_FRAME_THREADS,
+    .p.priv_class   = &ff_class,
+    .p.pix_fmts     = (const enum AVPixelFormat[]){
         AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUV444P, AV_PIX_FMT_YUV411P,
         AV_PIX_FMT_YUV410P, AV_PIX_FMT_YUV440P,
         AV_PIX_FMT_GBRP,
-        AV_PIX_FMT_GBRP9, AV_PIX_FMT_GBRP10, AV_PIX_FMT_GBRP12, AV_PIX_FMT_GBRP14,
+        AV_PIX_FMT_GBRP9, AV_PIX_FMT_GBRP10, AV_PIX_FMT_GBRP12, AV_PIX_FMT_GBRP14, AV_PIX_FMT_GBRP16,
         AV_PIX_FMT_GRAY8, AV_PIX_FMT_GRAY16,
         AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUVA422P, AV_PIX_FMT_YUVA444P,
         AV_PIX_FMT_GBRAP,
-        AV_PIX_FMT_GRAY8A,
         AV_PIX_FMT_YUV420P9, AV_PIX_FMT_YUV420P10, AV_PIX_FMT_YUV420P12, AV_PIX_FMT_YUV420P14, AV_PIX_FMT_YUV420P16,
         AV_PIX_FMT_YUV422P9, AV_PIX_FMT_YUV422P10, AV_PIX_FMT_YUV422P12, AV_PIX_FMT_YUV422P14, AV_PIX_FMT_YUV422P16,
         AV_PIX_FMT_YUV444P9, AV_PIX_FMT_YUV444P10, AV_PIX_FMT_YUV444P12, AV_PIX_FMT_YUV444P14, AV_PIX_FMT_YUV444P16,

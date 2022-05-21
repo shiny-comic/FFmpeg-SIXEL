@@ -22,7 +22,6 @@
 #define AVUTIL_LOG_H
 
 #include <stdarg.h>
-#include "avutil.h"
 #include "attributes.h"
 #include "version.h"
 
@@ -44,7 +43,7 @@ typedef enum {
     AV_CLASS_CATEGORY_DEVICE_AUDIO_INPUT,
     AV_CLASS_CATEGORY_DEVICE_OUTPUT,
     AV_CLASS_CATEGORY_DEVICE_INPUT,
-    AV_CLASS_CATEGORY_NB, ///< not part of ABI/API
+    AV_CLASS_CATEGORY_NB  ///< not part of ABI/API
 }AVClassCategory;
 
 #define AV_IS_INPUT_DEVICE(category) \
@@ -108,21 +107,6 @@ typedef struct AVClass {
     int parent_log_context_offset;
 
     /**
-     * Return next AVOptions-enabled child or NULL
-     */
-    void* (*child_next)(void *obj, void *prev);
-
-    /**
-     * Return an AVClass corresponding to the next potential
-     * AVOptions-enabled child.
-     *
-     * The difference between child_next and this is that
-     * child_next iterates over _already existing_ objects, while
-     * child_class_next iterates over _all possible_ children.
-     */
-    const struct AVClass* (*child_class_next)(const struct AVClass *prev);
-
-    /**
      * Category used for visualization (like color)
      * This is only set if the category is equal for all objects using this class.
      * available since version (51 << 16 | 56 << 8 | 100)
@@ -140,6 +124,26 @@ typedef struct AVClass {
      * available since version (52.12)
      */
     int (*query_ranges)(struct AVOptionRanges **, void *obj, const char *key, int flags);
+
+    /**
+     * Return next AVOptions-enabled child or NULL
+     */
+    void* (*child_next)(void *obj, void *prev);
+
+    /**
+     * Iterate over the AVClasses corresponding to potential AVOptions-enabled
+     * children.
+     *
+     * @param iter pointer to opaque iteration state. The caller must initialize
+     *             *iter to NULL before the first call.
+     * @return AVClass for the next AVOptions-enabled child or NULL if there are
+     *         no more such children.
+     *
+     * @note The difference between child_next and this is that child_next
+     *       iterates over _already existing_ objects, while child_class_iterate
+     *       iterates over _all possible_ children.
+     */
+    const struct AVClass* (*child_class_iterate)(void **iter);
 } AVClass;
 
 /**
@@ -196,12 +200,12 @@ typedef struct AVClass {
  */
 #define AV_LOG_DEBUG    48
 
-#define AV_LOG_MAX_OFFSET (AV_LOG_DEBUG - AV_LOG_QUIET)
-
 /**
  * Extremely verbose debugging, useful for libav* development.
  */
 #define AV_LOG_TRACE    56
+
+#define AV_LOG_MAX_OFFSET (AV_LOG_TRACE - AV_LOG_QUIET)
 
 /**
  * @}
@@ -232,6 +236,27 @@ typedef struct AVClass {
  *        subsequent arguments are converted to output.
  */
 void av_log(void *avcl, int level, const char *fmt, ...) av_printf_format(3, 4);
+
+/**
+ * Send the specified message to the log once with the initial_level and then with
+ * the subsequent_level. By default, all logging messages are sent to
+ * stderr. This behavior can be altered by setting a different logging callback
+ * function.
+ * @see av_log
+ *
+ * @param avcl A pointer to an arbitrary struct of which the first field is a
+ *        pointer to an AVClass struct or NULL if general log.
+ * @param initial_level importance level of the message expressed using a @ref
+ *        lavu_log_constants "Logging Constant" for the first occurance.
+ * @param subsequent_level importance level of the message expressed using a @ref
+ *        lavu_log_constants "Logging Constant" after the first occurance.
+ * @param fmt The format string (printf-compatible) that specifies how
+ *        subsequent arguments are converted to output.
+ * @param state a variable to keep trak of if a message has already been printed
+ *        this must be initialized to 0 before the first use. The same state
+ *        must not be accessed by 2 Threads simultaneously.
+ */
+void av_log_once(void* avcl, int initial_level, int subsequent_level, int *state, const char *fmt, ...) av_printf_format(5, 6);
 
 
 /**
@@ -309,7 +334,7 @@ AVClassCategory av_default_get_category(void *ptr);
 
 /**
  * Format a line of log the same way as the default callback.
- * @param line          buffer to receive the formated line
+ * @param line          buffer to receive the formatted line
  * @param line_size     size of the buffer
  * @param print_prefix  used to store whether the prefix must be printed;
  *                      must point to a persistent integer initially set to 1
@@ -317,19 +342,22 @@ AVClassCategory av_default_get_category(void *ptr);
 void av_log_format_line(void *ptr, int level, const char *fmt, va_list vl,
                         char *line, int line_size, int *print_prefix);
 
-#if FF_API_DLOG
 /**
- * av_dlog macros
- * @deprecated unused
- * Useful to print debug messages that shouldn't get compiled in normally.
+ * Format a line of log the same way as the default callback.
+ * @param line          buffer to receive the formatted line;
+ *                      may be NULL if line_size is 0
+ * @param line_size     size of the buffer; at most line_size-1 characters will
+ *                      be written to the buffer, plus one null terminator
+ * @param print_prefix  used to store whether the prefix must be printed;
+ *                      must point to a persistent integer initially set to 1
+ * @return Returns a negative value if an error occurred, otherwise returns
+ *         the number of characters that would have been written for a
+ *         sufficiently large buffer, not including the terminating null
+ *         character. If the return value is not less than line_size, it means
+ *         that the log message was truncated to fit the buffer.
  */
-
-#ifdef DEBUG
-#    define av_dlog(pctx, ...) av_log(pctx, AV_LOG_DEBUG, __VA_ARGS__)
-#else
-#    define av_dlog(pctx, ...) do { if (0) av_log(pctx, AV_LOG_DEBUG, __VA_ARGS__); } while (0)
-#endif
-#endif /* FF_API_DLOG */
+int av_log_format_line2(void *ptr, int level, const char *fmt, va_list vl,
+                        char *line, int line_size, int *print_prefix);
 
 /**
  * Skip repeated messages, this requires the user app to use av_log() instead of

@@ -22,61 +22,100 @@
  */
 
 #include "avcodec.h"
-#include "internal.h"
+#include "codec_internal.h"
 #include "v210dec.h"
+#include "v210dec_init.h"
 #include "libavutil/bswap.h"
 #include "libavutil/internal.h"
-#include "libavutil/mem.h"
+#include "libavutil/intreadwrite.h"
+#include "thread.h"
 
-#define READ_PIXELS(a, b, c)         \
-    do {                             \
-        val  = av_le2ne32(*src++);   \
-        *a++ =  val & 0x3FF;         \
-        *b++ = (val >> 10) & 0x3FF;  \
-        *c++ = (val >> 20) & 0x3FF;  \
-    } while (0)
-
-static void v210_planar_unpack_c(const uint32_t *src, uint16_t *y, uint16_t *u, uint16_t *v, int width)
-{
-    uint32_t val;
-    int i;
-
-    for( i = 0; i < width-5; i += 6 ){
-        READ_PIXELS(u, y, v);
-        READ_PIXELS(y, u, y);
-        READ_PIXELS(v, y, u);
-        READ_PIXELS(y, v, y);
-    }
-}
+typedef struct ThreadData {
+    AVFrame *frame;
+    uint8_t *buf;
+    int stride;
+} ThreadData;
 
 static av_cold int decode_init(AVCodecContext *avctx)
 {
     V210DecContext *s = avctx->priv_data;
 
-    if (avctx->width & 1) {
-        av_log(avctx, AV_LOG_ERROR, "v210 needs even width\n");
-        return AVERROR_INVALIDDATA;
-    }
     avctx->pix_fmt             = AV_PIX_FMT_YUV422P10;
     avctx->bits_per_raw_sample = 10;
 
-    s->unpack_frame            = v210_planar_unpack_c;
-
-    if (HAVE_MMX)
-        ff_v210_x86_init(s);
+    s->thread_count  = av_clip(avctx->thread_count, 1, avctx->height/4);
+    s->aligned_input = 0;
+    ff_v210dec_init(s);
 
     return 0;
 }
 
-static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
-                        AVPacket *avpkt)
+static int v210_decode_slice(AVCodecContext *avctx, void *arg, int jobnr, int threadnr)
 {
     V210DecContext *s = avctx->priv_data;
-
-    int h, w, ret, stride, aligned_input;
-    AVFrame *pic = data;
-    const uint8_t *psrc = avpkt->data;
+    int h, w;
+    ThreadData *td = arg;
+    AVFrame *frame = td->frame;
+    int stride = td->stride;
+    int slice_start = (avctx->height *  jobnr) / s->thread_count;
+    int slice_end = (avctx->height * (jobnr+1)) / s->thread_count;
+    uint8_t *psrc = td->buf + stride * slice_start;
     uint16_t *y, *u, *v;
+
+    y = (uint16_t*)frame->data[0] + slice_start * frame->linesize[0] / 2;
+    u = (uint16_t*)frame->data[1] + slice_start * frame->linesize[1] / 2;
+    v = (uint16_t*)frame->data[2] + slice_start * frame->linesize[2] / 2;
+    for (h = slice_start; h < slice_end; h++) {
+        const uint32_t *src = (const uint32_t*)psrc;
+        uint32_t val;
+
+        w = (avctx->width / 12) * 12;
+        s->unpack_frame(src, y, u, v, w);
+
+        y += w;
+        u += w >> 1;
+        v += w >> 1;
+        src += (w << 1) / 3;
+
+        if (w < avctx->width - 5) {
+            READ_PIXELS(u, y, v);
+            READ_PIXELS(y, u, y);
+            READ_PIXELS(v, y, u);
+            READ_PIXELS(y, v, y);
+            w += 6;
+        }
+
+        if (w < avctx->width - 1) {
+            READ_PIXELS(u, y, v);
+
+            val  = av_le2ne32(*src++);
+            *y++ =  val & 0x3FF;
+            if (w < avctx->width - 3) {
+                *u++ = (val >> 10) & 0x3FF;
+                *y++ = (val >> 20) & 0x3FF;
+
+                val  = av_le2ne32(*src++);
+                *v++ =  val & 0x3FF;
+                *y++ = (val >> 10) & 0x3FF;
+            }
+        }
+
+        psrc += stride;
+        y += frame->linesize[0] / 2 - avctx->width + (avctx->width & 1);
+        u += frame->linesize[1] / 2 - avctx->width / 2;
+        v += frame->linesize[2] / 2 - avctx->width / 2;
+    }
+
+    return 0;
+}
+
+static int decode_frame(AVCodecContext *avctx, AVFrame *pic,
+                        int *got_frame, AVPacket *avpkt)
+{
+    V210DecContext *s = avctx->priv_data;
+    ThreadData td;
+    int ret, stride, aligned_input;
+    const uint8_t *psrc = avpkt->data;
 
     if (s->custom_stride )
         stride = s->custom_stride;
@@ -96,55 +135,28 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
             return AVERROR_INVALIDDATA;
         }
     }
+    td.stride = stride;
+    if (   avctx->codec_tag == MKTAG('C', '2', '1', '0')
+        && avpkt->size > 64
+        && AV_RN32(psrc) == AV_RN32("INFO")
+        && avpkt->size - 64 >= stride * avctx->height)
+        psrc += 64;
 
-    aligned_input = !((uintptr_t)psrc & 0xf) && !(stride & 0xf);
+    aligned_input = !((uintptr_t)psrc & 0x1f) && !(stride & 0x1f);
     if (aligned_input != s->aligned_input) {
         s->aligned_input = aligned_input;
-        if (HAVE_MMX)
-            ff_v210_x86_init(s);
+        ff_v210dec_init(s);
     }
 
-    if ((ret = ff_get_buffer(avctx, pic, 0)) < 0)
+    if ((ret = ff_thread_get_buffer(avctx, pic, 0)) < 0)
         return ret;
 
-    y = (uint16_t*)pic->data[0];
-    u = (uint16_t*)pic->data[1];
-    v = (uint16_t*)pic->data[2];
     pic->pict_type = AV_PICTURE_TYPE_I;
     pic->key_frame = 1;
 
-    for (h = 0; h < avctx->height; h++) {
-        const uint32_t *src = (const uint32_t*)psrc;
-        uint32_t val;
-
-        w = (avctx->width / 6) * 6;
-        s->unpack_frame(src, y, u, v, w);
-
-        y += w;
-        u += w >> 1;
-        v += w >> 1;
-        src += (w << 1) / 3;
-
-        if (w < avctx->width - 1) {
-            READ_PIXELS(u, y, v);
-
-            val  = av_le2ne32(*src++);
-            *y++ =  val & 0x3FF;
-            if (w < avctx->width - 3) {
-                *u++ = (val >> 10) & 0x3FF;
-                *y++ = (val >> 20) & 0x3FF;
-
-                val  = av_le2ne32(*src++);
-                *v++ =  val & 0x3FF;
-                *y++ = (val >> 10) & 0x3FF;
-            }
-        }
-
-        psrc += stride;
-        y += pic->linesize[0] / 2 - avctx->width;
-        u += pic->linesize[1] / 2 - avctx->width / 2;
-        v += pic->linesize[2] / 2 - avctx->width / 2;
-    }
+    td.buf = (uint8_t*)psrc;
+    td.frame = pic;
+    avctx->execute2(avctx, v210_decode_slice, &td, NULL, s->thread_count);
 
     if (avctx->field_order > AV_FIELD_PROGRESSIVE) {
         /* we have interlaced material flagged in container */
@@ -160,26 +172,29 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
 
 #define V210DEC_FLAGS AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM
 static const AVOption v210dec_options[] = {
-    {"custom_stride", "Custom V210 stride", offsetof(V210DecContext, custom_stride), FF_OPT_TYPE_INT,
+    {"custom_stride", "Custom V210 stride", offsetof(V210DecContext, custom_stride), AV_OPT_TYPE_INT,
      {.i64 = 0}, INT_MIN, INT_MAX, V210DEC_FLAGS},
     {NULL}
 };
 
 static const AVClass v210dec_class = {
-    "V210 Decoder",
-    av_default_item_name,
-    v210dec_options,
-    LIBAVUTIL_VERSION_INT,
+    .class_name = "V210 Decoder",
+    .item_name  = av_default_item_name,
+    .option     = v210dec_options,
+    .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_v210_decoder = {
-    .name           = "v210",
-    .long_name      = NULL_IF_CONFIG_SMALL("Uncompressed 4:2:2 10-bit"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_V210,
+const FFCodec ff_v210_decoder = {
+    .p.name         = "v210",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Uncompressed 4:2:2 10-bit"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_V210,
     .priv_data_size = sizeof(V210DecContext),
     .init           = decode_init,
-    .decode         = decode_frame,
-    .capabilities   = CODEC_CAP_DR1,
-    .priv_class     = &v210dec_class,
+    FF_CODEC_DECODE_CB(decode_frame),
+    .p.capabilities = AV_CODEC_CAP_DR1 |
+                      AV_CODEC_CAP_SLICE_THREADS |
+                      AV_CODEC_CAP_FRAME_THREADS,
+    .p.priv_class   = &v210dec_class,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

@@ -1,5 +1,4 @@
 /*
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -21,10 +20,11 @@
 #define AVCODEC_ERROR_RESILIENCE_H
 
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "avcodec.h"
 #include "me_cmp.h"
-#include "thread.h"
+#include "threadframe.h"
 
 ///< current MB is the first after a resync marker
 #define VP_START               1
@@ -42,7 +42,7 @@ typedef struct ERPicture {
     AVFrame *f;
     ThreadFrame *tf;
 
-    // it's the caller's responsibility to allocate these buffers
+    // it is the caller's responsibility to allocate these buffers
     int16_t (*motion_val[2])[2];
     int8_t *ref_index[2];
 
@@ -52,16 +52,17 @@ typedef struct ERPicture {
 
 typedef struct ERContext {
     AVCodecContext *avctx;
-    MECmpContext mecc;
+
+    me_cmp_func sad;
     int mecc_inited;
 
     int *mb_index2xy;
     int mb_num;
     int mb_width, mb_height;
-    int mb_stride;
-    int b8_stride;
+    ptrdiff_t mb_stride;
+    ptrdiff_t b8_stride;
 
-    volatile int error_count;
+    atomic_int error_count;
     int error_occurred;
     uint8_t *error_status_table;
     uint8_t *er_temp_buffer;
@@ -81,7 +82,6 @@ typedef struct ERContext {
     uint16_t pb_time;
     int quarter_sample;
     int partitioned_frame;
-    int ref_count;
 
     void (*decode_mb)(void *opaque, int ref, int mv_dir, int mv_type,
                       int (*mv)[2][4][2],

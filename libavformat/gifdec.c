@@ -25,6 +25,7 @@
  */
 
 #include "avformat.h"
+#include "libavutil/bprint.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/opt.h"
 #include "internal.h"
@@ -52,6 +53,9 @@ typedef struct GIFDemuxContext {
     int total_iter;
     int iter_count;
     int ignore_loop;
+
+    int nb_frames;
+    int last_duration;
 } GIFDemuxContext;
 
 /**
@@ -65,7 +69,7 @@ typedef struct GIFDemuxContext {
  */
 #define GIF_MIN_DELAY       2
 
-static int gif_probe(AVProbeData *p)
+static int gif_probe(const AVProbeData *p)
 {
     /* check magick */
     if (memcmp(p->buf, gif87a_sig, 6) && memcmp(p->buf, gif89a_sig, 6))
@@ -91,42 +95,6 @@ static int resync(AVIOContext *pb)
     return 0;
 }
 
-static int gif_read_header(AVFormatContext *s)
-{
-    GIFDemuxContext *gdc = s->priv_data;
-    AVIOContext     *pb  = s->pb;
-    AVStream        *st;
-    int width, height, ret;
-
-    if ((ret = resync(pb)) < 0)
-        return ret;
-
-    gdc->delay  = gdc->default_delay;
-    width  = avio_rl16(pb);
-    height = avio_rl16(pb);
-
-    if (width == 0 || height == 0)
-        return AVERROR_INVALIDDATA;
-
-    st = avformat_new_stream(s, NULL);
-    if (!st)
-        return AVERROR(ENOMEM);
-
-    /* GIF format operates with time in "hundredths of second",
-     * therefore timebase is 1/100 */
-    avpriv_set_pts_info(st, 64, 1, 100);
-    st->codec->codec_type = AVMEDIA_TYPE_VIDEO;
-    st->codec->codec_id   = AV_CODEC_ID_GIF;
-    st->codec->width      = width;
-    st->codec->height     = height;
-
-    /* jump to start because gif decoder needs header data too */
-    if (avio_seek(pb, 0, SEEK_SET) != 0)
-        return AVERROR(EIO);
-
-    return 0;
-}
-
 static int gif_skip_subblocks(AVIOContext *pb)
 {
     int sb_size, ret = 0;
@@ -137,6 +105,104 @@ static int gif_skip_subblocks(AVIOContext *pb)
     }
 
     return ret;
+}
+
+static int gif_read_header(AVFormatContext *s)
+{
+    GIFDemuxContext *gdc = s->priv_data;
+    AVIOContext     *pb  = s->pb;
+    AVStream        *st;
+    int type, width, height, ret, n, flags;
+    int64_t nb_frames = 0, duration = 0;
+
+    if ((ret = resync(pb)) < 0)
+        return ret;
+
+    gdc->delay  = gdc->default_delay;
+    width  = avio_rl16(pb);
+    height = avio_rl16(pb);
+    flags = avio_r8(pb);
+    avio_skip(pb, 1);
+    n      = avio_r8(pb);
+
+    if (width == 0 || height == 0)
+        return AVERROR_INVALIDDATA;
+
+    st = avformat_new_stream(s, NULL);
+    if (!st)
+        return AVERROR(ENOMEM);
+
+    if (flags & 0x80)
+        avio_skip(pb, 3 * (1 << ((flags & 0x07) + 1)));
+
+    while ((type = avio_r8(pb)) != GIF_TRAILER) {
+        if (avio_feof(pb))
+            break;
+        if (type == GIF_EXTENSION_INTRODUCER) {
+            int subtype = avio_r8(pb);
+            if (subtype == GIF_COM_EXT_LABEL) {
+                AVBPrint bp;
+                int block_size;
+
+                av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+                while ((block_size = avio_r8(pb)) != 0) {
+                    avio_read_to_bprint(pb, &bp, block_size);
+                }
+                av_dict_set(&s->metadata, "comment", bp.str, 0);
+                av_bprint_finalize(&bp, NULL);
+            } else if (subtype == GIF_GCE_EXT_LABEL) {
+                int block_size = avio_r8(pb);
+
+                if (block_size == 4) {
+                    int delay;
+
+                    avio_skip(pb, 1);
+                    delay = avio_rl16(pb);
+                    if (delay < gdc->min_delay)
+                        delay = gdc->default_delay;
+                    delay = FFMIN(delay, gdc->max_delay);
+                    duration += delay;
+                    avio_skip(pb, 1);
+                } else {
+                    avio_skip(pb, block_size);
+                }
+                gif_skip_subblocks(pb);
+            } else {
+                gif_skip_subblocks(pb);
+            }
+        } else if (type == GIF_IMAGE_SEPARATOR) {
+            avio_skip(pb, 8);
+            flags = avio_r8(pb);
+            if (flags & 0x80)
+                avio_skip(pb, 3 * (1 << ((flags & 0x07) + 1)));
+            avio_skip(pb, 1);
+            gif_skip_subblocks(pb);
+            nb_frames++;
+        } else {
+            break;
+        }
+    }
+
+    /* GIF format operates with time in "hundredths of second",
+     * therefore timebase is 1/100 */
+    avpriv_set_pts_info(st, 64, 1, 100);
+    st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    st->codecpar->codec_id   = AV_CODEC_ID_GIF;
+    st->codecpar->width      = width;
+    st->codecpar->height     = height;
+    st->start_time           = 0;
+    st->duration             = duration;
+    st->nb_frames            = nb_frames;
+    if (n) {
+        st->codecpar->sample_aspect_ratio.num = n + 15;
+        st->codecpar->sample_aspect_ratio.den = 64;
+    }
+
+    /* jump to start because gif decoder needs header data too */
+    if (avio_seek(pb, 0, SEEK_SET) != 0)
+        return AVERROR(EIO);
+
+    return 0;
 }
 
 static int gif_read_ext(AVFormatContext *s)
@@ -181,6 +247,7 @@ static int gif_read_ext(AVFormatContext *s)
 
             if (sb_size == 3 && data[0] == 1) {
                 gdc->total_iter = AV_RL16(data+1);
+                av_log(s, AV_LOG_DEBUG, "Loop count is %d\n", gdc->total_iter);
 
                 if (gdc->total_iter == 0)
                     gdc->total_iter = -1;
@@ -279,6 +346,9 @@ parse_keyframe:
             pkt->stream_index = 0;
             pkt->duration = gdc->delay;
 
+            gdc->nb_frames ++;
+            gdc->last_duration = pkt->duration;
+
             /* Graphic Control Extension's scope is single frame.
              * Remove its influence. */
             gdc->delay = gdc->default_delay;
@@ -299,6 +369,9 @@ resync:
     }
 
     if ((ret >= 0 && !frame_parsed) || ret == AVERROR_EOF) {
+        if (gdc->nb_frames == 1) {
+            s->streams[0]->r_frame_rate = (AVRational) {100, gdc->last_duration};
+        }
         /* This might happen when there is no image block
          * between extension blocks and GIF_TRAILER or EOF */
         if (!gdc->ignore_loop && (block_label == GIF_TRAILER || avio_feof(pb))
@@ -313,7 +386,7 @@ static const AVOption options[] = {
     { "min_delay"    , "minimum valid delay between frames (in hundredths of second)", offsetof(GIFDemuxContext, min_delay)    , AV_OPT_TYPE_INT, {.i64 = GIF_MIN_DELAY}    , 0, 100 * 60, AV_OPT_FLAG_DECODING_PARAM },
     { "max_gif_delay", "maximum valid delay between frames (in hundredths of seconds)", offsetof(GIFDemuxContext, max_delay)   , AV_OPT_TYPE_INT, {.i64 = 65535}            , 0, 65535   , AV_OPT_FLAG_DECODING_PARAM },
     { "default_delay", "default delay between frames (in hundredths of second)"      , offsetof(GIFDemuxContext, default_delay), AV_OPT_TYPE_INT, {.i64 = GIF_DEFAULT_DELAY}, 0, 100 * 60, AV_OPT_FLAG_DECODING_PARAM },
-    { "ignore_loop"  , "ignore loop setting (netscape extension)"                    , offsetof(GIFDemuxContext, ignore_loop)  , AV_OPT_TYPE_INT, {.i64 = 1}                , 0,        1, AV_OPT_FLAG_DECODING_PARAM },
+    { "ignore_loop"  , "ignore loop setting (netscape extension)"                    , offsetof(GIFDemuxContext, ignore_loop)  , AV_OPT_TYPE_BOOL,{.i64 = 1}                , 0,        1, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
 
@@ -325,7 +398,7 @@ static const AVClass demuxer_class = {
     .category   = AV_CLASS_CATEGORY_DEMUXER,
 };
 
-AVInputFormat ff_gif_demuxer = {
+const AVInputFormat ff_gif_demuxer = {
     .name           = "gif",
     .long_name      = NULL_IF_CONFIG_SMALL("CompuServe Graphics Interchange Format (GIF)"),
     .priv_data_size = sizeof(GIFDemuxContext),

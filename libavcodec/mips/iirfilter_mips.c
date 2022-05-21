@@ -52,10 +52,11 @@
  * Reference: libavcodec/iirfilter.c
  */
 
+#include "config.h"
 #include "libavcodec/iirfilter.h"
 
 #if HAVE_INLINE_ASM
-#if !HAVE_LOONGSON3
+#if !HAVE_MIPS32R6 && !HAVE_MIPS64R6
 typedef struct FFIIRFilterCoeffs {
     int   order;
     float gain;
@@ -67,9 +68,9 @@ typedef struct FFIIRFilterState {
     float x[1];
 } FFIIRFilterState;
 
-static void ff_iir_filter_flt_mips(const struct FFIIRFilterCoeffs *c,
-                                   struct FFIIRFilterState *s, int size,
-                                   const float *src, int sstep, float *dst, int dstep)
+static void iir_filter_flt_mips(const struct FFIIRFilterCoeffs *c,
+                                struct FFIIRFilterState *s, int size,
+                                const float *src, ptrdiff_t sstep, float *dst, ptrdiff_t dstep)
 {
     if (c->order == 2) {
         int i;
@@ -196,13 +197,13 @@ static void ff_iir_filter_flt_mips(const struct FFIIRFilterCoeffs *c,
         }
     }
 }
-#endif /* !HAVE_LOONGSON3 */
+#endif /* !HAVE_MIPS32R6 && !HAVE_MIPS64R6 */
 #endif /* HAVE_INLINE_ASM */
 
 void ff_iir_filter_init_mips(FFIIRFilterContext *f) {
 #if HAVE_INLINE_ASM
-#if !HAVE_LOONGSON3
-    f->filter_flt = ff_iir_filter_flt_mips;
-#endif /* !HAVE_LOONGSON3 */
+#if !HAVE_MIPS32R6 && !HAVE_MIPS64R6
+    f->filter_flt = iir_filter_flt_mips;
+#endif /* !HAVE_MIPS32R6 && !HAVE_MIPS64R6 */
 #endif /* HAVE_INLINE_ASM */
 }

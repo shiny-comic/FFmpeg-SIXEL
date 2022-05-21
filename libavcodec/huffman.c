@@ -26,9 +26,14 @@
 
 #include <stdint.h>
 
-#include "avcodec.h"
-#include "get_bits.h"
+#include "libavutil/error.h"
+#include "libavutil/log.h"
+#include "libavutil/macros.h"
+#include "libavutil/mem.h"
+#include "libavutil/qsort.h"
+
 #include "huffman.h"
+#include "vlc.h"
 
 /* symbol for Huffman tree node */
 #define HNODE -1
@@ -151,7 +156,7 @@ static int build_huff_tree(VLC *vlc, Node *nodes, int head, int flags, int nb_bi
  * nodes size must be 2*nb_codes
  * first nb_codes nodes.count must be set
  */
-int ff_huff_build_tree(AVCodecContext *avctx, VLC *vlc, int nb_codes, int nb_bits,
+int ff_huff_build_tree(void *logctx, VLC *vlc, int nb_codes, int nb_bits,
                        Node *nodes, HuffCmp cmp, int flags)
 {
     int i, j;
@@ -165,12 +170,12 @@ int ff_huff_build_tree(AVCodecContext *avctx, VLC *vlc, int nb_codes, int nb_bit
     }
 
     if (sum >> 31) {
-        av_log(avctx, AV_LOG_ERROR,
+        av_log(logctx, AV_LOG_ERROR,
                "Too high symbol frequencies. "
                "Tree construction is not possible\n");
         return -1;
     }
-    qsort(nodes, nb_codes, sizeof(Node), cmp);
+    AV_QSORT(nodes, nb_codes, Node, cmp);
     cur_node = nb_codes;
     nodes[nb_codes*2-1].count = 0;
     for (i = 0; i < nb_codes * 2 - 1; i += 2) {
@@ -190,7 +195,7 @@ int ff_huff_build_tree(AVCodecContext *avctx, VLC *vlc, int nb_codes, int nb_bit
         cur_node++;
     }
     if (build_huff_tree(vlc, nodes, nb_codes * 2 - 2, flags, nb_bits) < 0) {
-        av_log(avctx, AV_LOG_ERROR, "Error building tree\n");
+        av_log(logctx, AV_LOG_ERROR, "Error building tree\n");
         return -1;
     }
     return 0;

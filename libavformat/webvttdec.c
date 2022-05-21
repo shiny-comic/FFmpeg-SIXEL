@@ -37,7 +37,7 @@ typedef struct {
     int kind;
 } WebVTTContext;
 
-static int webvtt_probe(AVProbeData *p)
+static int webvtt_probe(const AVProbeData *p)
 {
     const uint8_t *ptr = p->buf;
 
@@ -60,18 +60,17 @@ static int64_t read_ts(const char *s)
 static int webvtt_read_header(AVFormatContext *s)
 {
     WebVTTContext *webvtt = s->priv_data;
-    AVBPrint header, cue;
+    AVBPrint cue;
     int res = 0;
     AVStream *st = avformat_new_stream(s, NULL);
 
     if (!st)
         return AVERROR(ENOMEM);
     avpriv_set_pts_info(st, 64, 1, 1000);
-    st->codec->codec_type = AVMEDIA_TYPE_SUBTITLE;
-    st->codec->codec_id   = AV_CODEC_ID_WEBVTT;
+    st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+    st->codecpar->codec_id   = AV_CODEC_ID_WEBVTT;
     st->disposition |= webvtt->kind;
 
-    av_bprint_init(&header, 0, AV_BPRINT_SIZE_UNLIMITED);
     av_bprint_init(&cue,    0, AV_BPRINT_SIZE_UNLIMITED);
 
     for (;;) {
@@ -79,7 +78,7 @@ static int webvtt_read_header(AVFormatContext *s)
         int64_t pos;
         AVPacket *sub;
         const char *p, *identifier, *settings;
-        int identifier_len, settings_len;
+        size_t identifier_len, settings_len;
         int64_t ts_start, ts_end;
 
         ff_subtitles_read_chunk(s->pb, &cue);
@@ -92,7 +91,8 @@ static int webvtt_read_header(AVFormatContext *s)
 
         /* ignore header chunk */
         if (!strncmp(p, "\xEF\xBB\xBFWEBVTT", 9) ||
-            !strncmp(p, "WEBVTT", 6))
+            !strncmp(p, "WEBVTT", 6) ||
+            !strncmp(p, "NOTE", 4))
             continue;
 
         /* optional cue identifier (can be a number like in SRT or some kind of
@@ -125,7 +125,7 @@ static int webvtt_read_header(AVFormatContext *s)
             break;
 
         /* optional cue settings */
-        p += strcspn(p, "\n\t ");
+        p += strcspn(p, "\n\r\t ");
         while (*p == '\t' || *p == ' ')
             p++;
         settings = p;
@@ -161,11 +161,10 @@ static int webvtt_read_header(AVFormatContext *s)
         SET_SIDE_DATA(settings,   AV_PKT_DATA_WEBVTT_SETTINGS);
     }
 
-    ff_subtitles_queue_finalize(&webvtt->q);
+    ff_subtitles_queue_finalize(s, &webvtt->q);
 
 end:
     av_bprint_finalize(&cue,    NULL);
-    av_bprint_finalize(&header, NULL);
     return res;
 }
 
@@ -191,14 +190,14 @@ static int webvtt_read_close(AVFormatContext *s)
 }
 
 #define OFFSET(x) offsetof(WebVTTContext, x)
-#define KIND_FLAGS AV_OPT_FLAG_SUBTITLE_PARAM
+#define KIND_FLAGS AV_OPT_FLAG_SUBTITLE_PARAM|AV_OPT_FLAG_DECODING_PARAM
 
 static const AVOption options[] = {
     { "kind", "Set kind of WebVTT track", OFFSET(kind), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, KIND_FLAGS, "webvtt_kind" },
-        { "subtitles",    "WebVTT subtitles kind",    0, AV_OPT_TYPE_CONST, { .i64 = 0 },                           INT_MIN, INT_MAX, 0, "webvtt_kind" },
-        { "captions",     "WebVTT captions kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_CAPTIONS },     INT_MIN, INT_MAX, 0, "webvtt_kind" },
-        { "descriptions", "WebVTT descriptions kind", 0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_DESCRIPTIONS }, INT_MIN, INT_MAX, 0, "webvtt_kind" },
-        { "metadata",     "WebVTT metadata kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_METADATA },     INT_MIN, INT_MAX, 0, "webvtt_kind" },
+        { "subtitles",    "WebVTT subtitles kind",    0, AV_OPT_TYPE_CONST, { .i64 = 0 },                           INT_MIN, INT_MAX, KIND_FLAGS, "webvtt_kind" },
+        { "captions",     "WebVTT captions kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_CAPTIONS },     INT_MIN, INT_MAX, KIND_FLAGS, "webvtt_kind" },
+        { "descriptions", "WebVTT descriptions kind", 0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_DESCRIPTIONS }, INT_MIN, INT_MAX, KIND_FLAGS, "webvtt_kind" },
+        { "metadata",     "WebVTT metadata kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_METADATA },     INT_MIN, INT_MAX, KIND_FLAGS, "webvtt_kind" },
     { NULL }
 };
 
@@ -209,10 +208,11 @@ static const AVClass webvtt_demuxer_class = {
     .version     = LIBAVUTIL_VERSION_INT,
 };
 
-AVInputFormat ff_webvtt_demuxer = {
+const AVInputFormat ff_webvtt_demuxer = {
     .name           = "webvtt",
     .long_name      = NULL_IF_CONFIG_SMALL("WebVTT subtitle"),
     .priv_data_size = sizeof(WebVTTContext),
+    .flags_internal = FF_FMT_INIT_CLEANUP,
     .read_probe     = webvtt_probe,
     .read_header    = webvtt_read_header,
     .read_packet    = webvtt_read_packet,

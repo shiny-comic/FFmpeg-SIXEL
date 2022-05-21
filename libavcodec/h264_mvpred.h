@@ -1,5 +1,5 @@
 /*
- * H.26L/H.264/AVC/JVT/14496-10/... motion vector predicion
+ * H.26L/H.264/AVC/JVT/14496-10/... motion vector prediction
  * Copyright (c) 2003 Michael Niedermayer <michaelni@gmx.at>
  *
  * This file is part of FFmpeg.
@@ -21,18 +21,17 @@
 
 /**
  * @file
- * H.264 / AVC / MPEG4 part10 motion vector predicion.
+ * H.264 / AVC / MPEG-4 part10 motion vector prediction.
  * @author Michael Niedermayer <michaelni@gmx.at>
  */
 
 #ifndef AVCODEC_H264_MVPRED_H
 #define AVCODEC_H264_MVPRED_H
 
-#include "internal.h"
-#include "avcodec.h"
-#include "h264.h"
+#include "h264dec.h"
 #include "mpegutils.h"
 #include "libavutil/avassert.h"
+#include "libavutil/mem_internal.h"
 
 
 static av_always_inline int fetch_diagonal_mv(const H264Context *h, H264SliceContext *sl,
@@ -68,7 +67,7 @@ static av_always_inline int fetch_diagonal_mv(const H264Context *h, H264SliceCon
             }
             if (MB_FIELD(sl) && !IS_INTERLACED(sl->left_type[0])) {
                 // left shift will turn LIST_NOT_USED into PART_NOT_AVAILABLE, but that's OK.
-                SET_DIAG_MV(/ 2, << 1, sl->left_mb_xy[i >= 36], ((i >> 2)) & 3);
+                SET_DIAG_MV(/ 2, *2, sl->left_mb_xy[i >= 36], ((i >> 2)) & 3);
             }
         }
 #undef SET_DIAG_MV
@@ -248,7 +247,7 @@ static av_always_inline void pred_8x16_motion(const H264Context *const h,
             if (IS_INTERLACED(type)) {          \
                 refn >>= 1;                     \
                 AV_COPY32(mvbuf[idx], mvn);     \
-                mvbuf[idx][1] <<= 1;            \
+                mvbuf[idx][1] *= 2;             \
                 mvn = mvbuf[idx];               \
             }                                   \
         }                                       \
@@ -464,7 +463,7 @@ static void fill_decode_caches(const H264Context *h, H264SliceContext *sl, int m
 
     if (!IS_SKIP(mb_type)) {
         if (IS_INTRA(mb_type)) {
-            int type_mask = h->pps.constrained_intra_pred ? IS_INTRA(-1) : -1;
+            int type_mask = h->ps.pps->constrained_intra_pred ? IS_INTRA(-1) : -1;
             sl->topleft_samples_available     =
                 sl->top_samples_available     =
                     sl->left_samples_available = 0xFFFF;
@@ -771,7 +770,7 @@ static void fill_decode_caches(const H264Context *h, H264SliceContext *sl, int m
 
 #define MAP_F2F(idx, mb_type)                                           \
     if (!IS_INTERLACED(mb_type) && sl->ref_cache[list][idx] >= 0) {     \
-        sl->ref_cache[list][idx]    <<= 1;                              \
+        sl->ref_cache[list][idx]     *= 2;                              \
         sl->mv_cache[list][idx][1]   /= 2;                              \
         sl->mvd_cache[list][idx][1] >>= 1;                              \
     }
@@ -783,7 +782,7 @@ static void fill_decode_caches(const H264Context *h, H264SliceContext *sl, int m
 #define MAP_F2F(idx, mb_type)                                           \
     if (IS_INTERLACED(mb_type) && sl->ref_cache[list][idx] >= 0) {      \
         sl->ref_cache[list][idx]    >>= 1;                              \
-        sl->mv_cache[list][idx][1]  <<= 1;                              \
+        sl->mv_cache[list][idx][1]   *= 2;                              \
         sl->mvd_cache[list][idx][1] <<= 1;                              \
     }
 

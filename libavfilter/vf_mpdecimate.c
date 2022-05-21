@@ -33,7 +33,7 @@
 #include "formats.h"
 #include "video.h"
 
-typedef struct {
+typedef struct DecimateContext {
     const AVClass *class;
     int lo, hi;                    ///< lower and higher threshold number of differences
                                    ///< values for 8x8 blocks
@@ -84,15 +84,21 @@ static int diff_planes(AVFilterContext *ctx,
         for (x = 8; x < w-7; x += 4) {
             d = decimate->sad(cur + y*cur_linesize + x, cur_linesize,
                               ref + y*ref_linesize + x, ref_linesize);
-            if (d > decimate->hi)
+            if (d > decimate->hi) {
+                av_log(ctx, AV_LOG_DEBUG, "%d>=hi ", d);
                 return 1;
+            }
             if (d > decimate->lo) {
                 c++;
-                if (c > t)
+                if (c > t) {
+                    av_log(ctx, AV_LOG_DEBUG, "lo:%d>=%d ", c, t);
                     return 1;
+                }
             }
         }
     }
+
+    av_log(ctx, AV_LOG_DEBUG, "lo:%d<%d ", c, t);
     return 0;
 }
 
@@ -114,16 +120,24 @@ static int decimate_frame(AVFilterContext *ctx,
         return 0;
 
     for (plane = 0; ref->data[plane] && ref->linesize[plane]; plane++) {
+        /* use 8x8 SAD even on subsampled planes.  The blocks won't match up with
+         * luma blocks, but hopefully nobody is depending on this to catch
+         * localized chroma changes that wouldn't exceed the thresholds when
+         * diluted by using what's effectively a larger block size.
+         */
         int vsub = plane == 1 || plane == 2 ? decimate->vsub : 0;
         int hsub = plane == 1 || plane == 2 ? decimate->hsub : 0;
         if (diff_planes(ctx,
                         cur->data[plane], cur->linesize[plane],
                         ref->data[plane], ref->linesize[plane],
-                        FF_CEIL_RSHIFT(ref->width,  hsub),
-                        FF_CEIL_RSHIFT(ref->height, vsub)))
+                        AV_CEIL_RSHIFT(ref->width,  hsub),
+                        AV_CEIL_RSHIFT(ref->height, vsub))) {
+            emms_c();
             return 0;
+        }
     }
 
+    emms_c();
     return 1;
 }
 
@@ -131,7 +145,7 @@ static av_cold int init(AVFilterContext *ctx)
 {
     DecimateContext *decimate = ctx->priv;
 
-    decimate->sad = av_pixelutils_get_sad_fn(3, 3, 0, decimate); // 8x8, not aligned on blocksize
+    decimate->sad = av_pixelutils_get_sad_fn(3, 3, 0, ctx); // 8x8, not aligned on blocksize
     if (!decimate->sad)
         return AVERROR(EINVAL);
 
@@ -147,22 +161,21 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_frame_free(&decimate->ref);
 }
 
-static int query_formats(AVFilterContext *ctx)
-{
-    static const enum AVPixelFormat pix_fmts[] = {
-        AV_PIX_FMT_YUV444P,      AV_PIX_FMT_YUV422P,
-        AV_PIX_FMT_YUV420P,      AV_PIX_FMT_YUV411P,
-        AV_PIX_FMT_YUV410P,      AV_PIX_FMT_YUV440P,
-        AV_PIX_FMT_YUVJ444P,     AV_PIX_FMT_YUVJ422P,
-        AV_PIX_FMT_YUVJ420P,     AV_PIX_FMT_YUVJ440P,
-        AV_PIX_FMT_YUVA420P,
-        AV_PIX_FMT_NONE
-    };
-    AVFilterFormats *fmts_list = ff_make_format_list(pix_fmts);
-    if (!fmts_list)
-        return AVERROR(ENOMEM);
-    return ff_set_common_formats(ctx, fmts_list);
-}
+static const enum AVPixelFormat pix_fmts[] = {
+    AV_PIX_FMT_YUV444P,      AV_PIX_FMT_YUV422P,
+    AV_PIX_FMT_YUV420P,      AV_PIX_FMT_YUV411P,
+    AV_PIX_FMT_YUV410P,      AV_PIX_FMT_YUV440P,
+    AV_PIX_FMT_YUVJ444P,     AV_PIX_FMT_YUVJ422P,
+    AV_PIX_FMT_YUVJ420P,     AV_PIX_FMT_YUVJ440P,
+    AV_PIX_FMT_YUVA420P,
+
+    AV_PIX_FMT_GBRP,
+
+    AV_PIX_FMT_YUVA444P,
+    AV_PIX_FMT_YUVA422P,
+
+    AV_PIX_FMT_NONE
+};
 
 static int config_input(AVFilterLink *inlink)
 {
@@ -204,19 +217,6 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *cur)
     return 0;
 }
 
-static int request_frame(AVFilterLink *outlink)
-{
-    DecimateContext *decimate = outlink->src->priv;
-    AVFilterLink *inlink = outlink->src->inputs[0];
-    int ret;
-
-    do {
-        ret = ff_request_frame(inlink);
-    } while (decimate->drop_count > 0 && ret >= 0);
-
-    return ret;
-}
-
 static const AVFilterPad mpdecimate_inputs[] = {
     {
         .name         = "default",
@@ -224,26 +224,23 @@ static const AVFilterPad mpdecimate_inputs[] = {
         .config_props = config_input,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad mpdecimate_outputs[] = {
     {
         .name          = "default",
         .type          = AVMEDIA_TYPE_VIDEO,
-        .request_frame = request_frame,
     },
-    { NULL }
 };
 
-AVFilter ff_vf_mpdecimate = {
+const AVFilter ff_vf_mpdecimate = {
     .name          = "mpdecimate",
     .description   = NULL_IF_CONFIG_SMALL("Remove near-duplicate frames."),
     .init          = init,
     .uninit        = uninit,
     .priv_size     = sizeof(DecimateContext),
     .priv_class    = &mpdecimate_class,
-    .query_formats = query_formats,
-    .inputs        = mpdecimate_inputs,
-    .outputs       = mpdecimate_outputs,
+    FILTER_INPUTS(mpdecimate_inputs),
+    FILTER_OUTPUTS(mpdecimate_outputs),
+    FILTER_PIXFMTS_ARRAY(pix_fmts),
 };

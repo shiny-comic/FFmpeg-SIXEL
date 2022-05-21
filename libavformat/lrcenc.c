@@ -27,9 +27,8 @@
 #include "internal.h"
 #include "lrc.h"
 #include "metadata.h"
-#include "subtitles.h"
+#include "mux.h"
 #include "version.h"
-#include "libavutil/bprint.h"
 #include "libavutil/dict.h"
 #include "libavutil/log.h"
 #include "libavutil/macros.h"
@@ -39,19 +38,20 @@ static int lrc_write_header(AVFormatContext *s)
     const AVDictionaryEntry *metadata_item;
 
     if(s->nb_streams != 1 ||
-       s->streams[0]->codec->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+       s->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
         av_log(s, AV_LOG_ERROR,
                "LRC supports only a single subtitle stream.\n");
         return AVERROR(EINVAL);
     }
-    if(s->streams[0]->codec->codec_id != AV_CODEC_ID_SUBRIP &&
-       s->streams[0]->codec->codec_id != AV_CODEC_ID_TEXT) {
+    if(s->streams[0]->codecpar->codec_id != AV_CODEC_ID_SUBRIP &&
+       s->streams[0]->codecpar->codec_id != AV_CODEC_ID_TEXT) {
         av_log(s, AV_LOG_ERROR, "Unsupported subtitle codec: %s\n",
-               avcodec_get_name(s->streams[0]->codec->codec_id));
+               avcodec_get_name(s->streams[0]->codecpar->codec_id));
         return AVERROR(EINVAL);
     }
     avpriv_set_pts_info(s->streams[0], 64, 1, 100);
 
+    ff_standardize_creation_time(s);
     ff_metadata_conv_ctx(s, ff_lrc_metadata_conv, NULL);
     if(!(s->flags & AVFMT_FLAG_BITEXACT)) { // avoid breaking regression tests
         /* LRC provides a metadata slot for specifying encoder version
@@ -78,68 +78,55 @@ static int lrc_write_header(AVFormatContext *s)
         avio_printf(s->pb, "[%s:%s]\n",
                     metadata_item->key, metadata_item->value);
     }
-    avio_printf(s->pb, "\n");
+    avio_w8(s->pb, '\n');
     return 0;
 }
 
 static int lrc_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
     if(pkt->pts != AV_NOPTS_VALUE) {
-        char *data = av_malloc(pkt->size + 1);
-        char *line;
-        char *delim;
+        const uint8_t *line = pkt->data;
+        const uint8_t *end  = pkt->data + pkt->size;
 
-        if(!data) {
-            return AVERROR(ENOMEM);
-        }
-        memcpy(data, pkt->data, pkt->size);
-        data[pkt->size] = '\0';
-
-        for(delim = data + pkt->size - 1;
-            delim >= data && (delim[0] == '\n' || delim[0] == '\r'); delim--) {
-            delim[0] = '\0'; // Strip last empty lines
-        }
-        line = data;
-        while(line[0] == '\n' || line[0] == '\r') {
-            line++; // Skip first empty lines
+        while (end > line && (end[-1] == '\n' || end[-1] == '\r'))
+            end--;
+        if (line != end) {
+            while (line[0] == '\n' || line[0] == '\r')
+                line++; // Skip first empty lines
         }
 
         while(line) {
-            delim = strchr(line, '\n');
-            if(delim) {
-                if(delim > line && delim[-1] == '\r') {
-                    delim[-1] = '\0';
-                }
-                delim[0] = '\0';
-                delim++;
+            const uint8_t *next_line = memchr(line, '\n', end - line);
+            size_t size = end - line;
+
+            if (next_line) {
+                size = next_line - line;
+                if (next_line > line && next_line[-1] == '\r')
+                    size--;
+                next_line++;
             }
             if(line[0] == '[') {
                 av_log(s, AV_LOG_WARNING,
                        "Subtitle starts with '[', may cause problems with LRC format.\n");
             }
 
-            if(pkt->pts >= 0) {
-                avio_printf(s->pb, "[%02"PRId64":%02"PRId64".%02"PRId64"]",
-                            (pkt->pts / 6000),
-                            ((pkt->pts / 100) % 60),
-                            (pkt->pts % 100));
-            } else {
-                /* Offset feature of LRC can easily make pts negative,
-                 * we just output it directly and let the player drop it. */
-                avio_printf(s->pb, "[-%02"PRId64":%02"PRId64".%02"PRId64"]",
-                            (-pkt->pts) / 6000,
-                            ((-pkt->pts) / 100) % 60,
-                            (-pkt->pts) % 100);
-            }
-            avio_printf(s->pb, "%s\n", line);
-            line = delim;
+            /* Offset feature of LRC can easily make pts negative,
+             * we just output it directly and let the player drop it. */
+            avio_write(s->pb, "[-", 1 + (pkt->pts < 0));
+            avio_printf(s->pb, "%02"PRIu64":%02"PRIu64".%02"PRIu64"]",
+                        (FFABS64U(pkt->pts) / 6000),
+                        ((FFABS64U(pkt->pts) / 100) % 60),
+                        (FFABS64U(pkt->pts) % 100));
+
+            avio_write(s->pb, line, size);
+            avio_w8(s->pb, '\n');
+            line = next_line;
         }
-        av_free(data);
     }
     return 0;
 }
 
-AVOutputFormat ff_lrc_muxer = {
+const AVOutputFormat ff_lrc_muxer = {
     .name           = "lrc",
     .long_name      = NULL_IF_CONFIG_SMALL("LRC lyrics"),
     .extensions     = "lrc",

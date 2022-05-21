@@ -45,11 +45,14 @@ static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, cons
 
 int main(int argc, char **argv)
 {
-    AVOutputFormat *ofmt = NULL;
+    const AVOutputFormat *ofmt = NULL;
     AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
-    AVPacket pkt;
+    AVPacket *pkt = NULL;
     const char *in_filename, *out_filename;
     int ret, i;
+    int stream_index = 0;
+    int *stream_mapping = NULL;
+    int stream_mapping_size = 0;
 
     if (argc < 3) {
         printf("usage: %s input output\n"
@@ -62,7 +65,11 @@ int main(int argc, char **argv)
     in_filename  = argv[1];
     out_filename = argv[2];
 
-    av_register_all();
+    pkt = av_packet_alloc();
+    if (!pkt) {
+        fprintf(stderr, "Could not allocate AVPacket\n");
+        return 1;
+    }
 
     if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
         fprintf(stderr, "Could not open input file '%s'", in_filename);
@@ -83,25 +90,42 @@ int main(int argc, char **argv)
         goto end;
     }
 
+    stream_mapping_size = ifmt_ctx->nb_streams;
+    stream_mapping = av_calloc(stream_mapping_size, sizeof(*stream_mapping));
+    if (!stream_mapping) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
     ofmt = ofmt_ctx->oformat;
 
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream *out_stream;
         AVStream *in_stream = ifmt_ctx->streams[i];
-        AVStream *out_stream = avformat_new_stream(ofmt_ctx, in_stream->codec->codec);
+        AVCodecParameters *in_codecpar = in_stream->codecpar;
+
+        if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO &&
+            in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+            in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+            stream_mapping[i] = -1;
+            continue;
+        }
+
+        stream_mapping[i] = stream_index++;
+
+        out_stream = avformat_new_stream(ofmt_ctx, NULL);
         if (!out_stream) {
             fprintf(stderr, "Failed allocating output stream\n");
             ret = AVERROR_UNKNOWN;
             goto end;
         }
 
-        ret = avcodec_copy_context(out_stream->codec, in_stream->codec);
+        ret = avcodec_parameters_copy(out_stream->codecpar, in_codecpar);
         if (ret < 0) {
-            fprintf(stderr, "Failed to copy context from input to output stream codec context\n");
+            fprintf(stderr, "Failed to copy codec parameters\n");
             goto end;
         }
-        out_stream->codec->codec_tag = 0;
-        if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-            out_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
+        out_stream->codecpar->codec_tag = 0;
     }
     av_dump_format(ofmt_ctx, 0, out_filename, 1);
 
@@ -122,32 +146,39 @@ int main(int argc, char **argv)
     while (1) {
         AVStream *in_stream, *out_stream;
 
-        ret = av_read_frame(ifmt_ctx, &pkt);
+        ret = av_read_frame(ifmt_ctx, pkt);
         if (ret < 0)
             break;
 
-        in_stream  = ifmt_ctx->streams[pkt.stream_index];
-        out_stream = ofmt_ctx->streams[pkt.stream_index];
+        in_stream  = ifmt_ctx->streams[pkt->stream_index];
+        if (pkt->stream_index >= stream_mapping_size ||
+            stream_mapping[pkt->stream_index] < 0) {
+            av_packet_unref(pkt);
+            continue;
+        }
 
-        log_packet(ifmt_ctx, &pkt, "in");
+        pkt->stream_index = stream_mapping[pkt->stream_index];
+        out_stream = ofmt_ctx->streams[pkt->stream_index];
+        log_packet(ifmt_ctx, pkt, "in");
 
         /* copy packet */
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-        pkt.pos = -1;
-        log_packet(ofmt_ctx, &pkt, "out");
+        av_packet_rescale_ts(pkt, in_stream->time_base, out_stream->time_base);
+        pkt->pos = -1;
+        log_packet(ofmt_ctx, pkt, "out");
 
-        ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
+        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+        /* pkt is now blank (av_interleaved_write_frame() takes ownership of
+         * its contents and resets pkt), so that no unreferencing is necessary.
+         * This would be different if one used av_write_frame(). */
         if (ret < 0) {
             fprintf(stderr, "Error muxing packet\n");
             break;
         }
-        av_free_packet(&pkt);
     }
 
     av_write_trailer(ofmt_ctx);
 end:
+    av_packet_free(&pkt);
 
     avformat_close_input(&ifmt_ctx);
 
@@ -155,6 +186,8 @@ end:
     if (ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE))
         avio_closep(&ofmt_ctx->pb);
     avformat_free_context(ofmt_ctx);
+
+    av_freep(&stream_mapping);
 
     if (ret < 0 && ret != AVERROR_EOF) {
         fprintf(stderr, "Error occurred: %s\n", av_err2str(ret));

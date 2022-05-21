@@ -22,11 +22,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavutil/intreadwrite.h"
+#include <string.h>
+
 #include "libavutil/imgutils.h"
+#include "libavutil/internal.h"
+#include "libavutil/intreadwrite.h"
 
 #include "avcodec.h"
-#include "get_bits.h"
+#include "codec_internal.h"
 #include "internal.h"
 
 typedef struct YopDecContext {
@@ -188,8 +191,8 @@ static uint8_t yop_get_next_nibble(YopDecContext *s)
     return ret;
 }
 
-static int yop_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
-                            AVPacket *avpkt)
+static int yop_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
+                            int *got_frame, AVPacket *avpkt)
 {
     YopDecContext *s = avctx->priv_data;
     AVFrame *frame = s->frame;
@@ -202,7 +205,7 @@ static int yop_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
         return AVERROR_INVALIDDATA;
     }
 
-    if ((ret = ff_reget_buffer(avctx, frame)) < 0)
+    if ((ret = ff_reget_buffer(avctx, frame, 0)) < 0)
         return ret;
 
     if (!avctx->frame_number)
@@ -256,20 +259,21 @@ static int yop_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
         s->dstptr += 2*frame->linesize[0] - x;
     }
 
-    if ((ret = av_frame_ref(data, s->frame)) < 0)
+    if ((ret = av_frame_ref(rframe, s->frame)) < 0)
         return ret;
 
     *got_frame = 1;
     return avpkt->size;
 }
 
-AVCodec ff_yop_decoder = {
-    .name           = "yop",
-    .long_name      = NULL_IF_CONFIG_SMALL("Psygnosis YOP Video"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_YOP,
+const FFCodec ff_yop_decoder = {
+    .p.name         = "yop",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Psygnosis YOP Video"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_YOP,
     .priv_data_size = sizeof(YopDecContext),
     .init           = yop_decode_init,
     .close          = yop_decode_close,
-    .decode         = yop_decode_frame,
+    FF_CODEC_DECODE_CB(yop_decode_frame),
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

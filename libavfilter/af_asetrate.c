@@ -22,7 +22,7 @@
 #include "avfilter.h"
 #include "internal.h"
 
-typedef struct {
+typedef struct ASetRateContext {
     const AVClass *class;
     int sample_rate;
     int rescale_pts;
@@ -39,8 +39,8 @@ typedef struct {
     OPT_GENERIC(name, field, def, min, max, descr, INT, i64, __VA_ARGS__)
 
 static const AVOption asetrate_options[] = {
-    OPT_INT("sample_rate", sample_rate, 44100, 1, INT_MAX, "set the sample rate"),
-    OPT_INT("r",           sample_rate, 44100, 1, INT_MAX, "set the sample rate"),
+    OPT_INT("sample_rate", sample_rate, 44100, 1, INT_MAX, "set the sample rate",),
+    OPT_INT("r",           sample_rate, 44100, 1, INT_MAX, "set the sample rate",),
     {NULL},
 };
 
@@ -52,7 +52,7 @@ static av_cold int query_formats(AVFilterContext *ctx)
     int sample_rates[] = { sr->sample_rate, -1 };
 
     return ff_formats_ref(ff_make_format_list(sample_rates),
-                   &ctx->outputs[0]->in_samplerates);
+                          &ctx->outputs[0]->incfg.samplerates);
 }
 
 static av_cold int config_props(AVFilterLink *outlink)
@@ -94,7 +94,6 @@ static const AVFilterPad asetrate_inputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .filter_frame = filter_frame,
     },
-    { NULL }
 };
 
 static const AVFilterPad asetrate_outputs[] = {
@@ -103,16 +102,16 @@ static const AVFilterPad asetrate_outputs[] = {
         .type         = AVMEDIA_TYPE_AUDIO,
         .config_props = config_props,
     },
-    { NULL }
 };
 
-AVFilter ff_af_asetrate = {
+const AVFilter ff_af_asetrate = {
     .name          = "asetrate",
     .description   = NULL_IF_CONFIG_SMALL("Change the sample rate without "
                                           "altering the data."),
-    .query_formats = query_formats,
     .priv_size     = sizeof(ASetRateContext),
-    .inputs        = asetrate_inputs,
-    .outputs       = asetrate_outputs,
+    FILTER_INPUTS(asetrate_inputs),
+    FILTER_OUTPUTS(asetrate_outputs),
+    FILTER_QUERY_FUNC(query_formats),
     .priv_class    = &asetrate_class,
+    .flags         = AVFILTER_FLAG_METADATA_ONLY,
 };

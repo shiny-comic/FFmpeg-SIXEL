@@ -19,6 +19,7 @@
  */
 
 #include "libavutil/attributes.h"
+#include "libavutil/internal.h"
 #include "libavutil/samplefmt.h"
 #include "flacdsp.h"
 #include "config.h"
@@ -49,8 +50,8 @@ static void flac_lpc_16_c(int32_t *decoded, const int coeffs[32],
     int i, j;
 
     for (i = pred_order; i < len - 1; i += 2, decoded += 2) {
-        int c = coeffs[0];
-        int d = decoded[0];
+        SUINT c = coeffs[0];
+        SUINT d = decoded[0];
         int s0 = 0, s1 = 0;
         for (j = 1; j < pred_order; j++) {
             s0 += c*d;
@@ -59,15 +60,15 @@ static void flac_lpc_16_c(int32_t *decoded, const int coeffs[32],
             c = coeffs[j];
         }
         s0 += c*d;
-        d = decoded[j] += s0 >> qlevel;
+        d = decoded[j] += (SUINT)(s0 >> qlevel);
         s1 += c*d;
-        decoded[j + 1] += s1 >> qlevel;
+        decoded[j + 1] += (SUINT)(s1 >> qlevel);
     }
     if (i < len) {
         int sum = 0;
         for (j = 0; j < pred_order; j++)
-            sum += coeffs[j] * decoded[j];
-        decoded[j] += sum >> qlevel;
+            sum += coeffs[j] * (SUINT)decoded[j];
+        decoded[j] = decoded[j] + (unsigned)(sum >> qlevel);
     }
 }
 

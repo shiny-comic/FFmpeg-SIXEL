@@ -75,16 +75,39 @@ $ make
 $ ./xterm  # launch
 ```
 
-## Step 2. Build FFmpeg-SIXEL with libsixel and libquvi (for network streaming)
+## Step 2. Build FFmpeg-SIXEL with libsixel
+Note: libquvi support has been removed from ffmpeg.
+To play youtube videos, you can use youtube-dl (or yt-dlp) to download a video, then you can play it with ffmpeg.
 
 ```
-$ git clone https://github.com/saitoha/libsixel
+$ git clone https://github.com/libsixel/libsixel
 $ cd libsixel
 $ ./configure && make install
 $ cd ..
-$ git clone https://github.com/saitoha/FFmpeg-SIXEL
+$ git clone https://github.com/Albert-S-Briscoe/FFmpeg-SIXEL
 $ cd FFmpeg-SIXEL
-$ ./configure --enable-libquvi --enable-libsixel
+$ ./configure --enable-libsixel
 $ make install
-$ ffmpeg -i 'https://www.youtube.com/watch?v=ixaMZPPmVG0' -f sixel -pix_fmt rgb24 -s 480x270 -
+```
+
+If you really don't want to `make install` a random fork of ffmpeg (which is an important dependency to a lot of programs), you can use this awful one-liner to generate another awful one-liner that will let you test ffmpeg-SIXEL. Just replace the `ffmpeg` command with the output. There's probably a better way, but here it is.
+```
+$ env a="$PWD" bash -c 'echo "env LD_LIBRARY_PATH=\"$a/libavfilter:$a/libavdevice:$a/libswresample:$a/libavcodec:$a/libswscale:$a/libpostproc:$a/libavutil:$a/libavformat:$LD_LIBRARY_PATH\" $a/ffmpeg"'
+```
+
+## Examples
+Play a video file:
+```
+$ ffmpeg -i videofilename -f sixel -pix_fmt rgb24 -s 480x270 -
+```
+
+If you want audio (and you use linux with pulseaudio), you can use this:
+```
+$ ffmpeg -i filename -f sixel -pix_fmt rgb24 -s 320x240 - -f alsa -ac 2 pulse
+```
+
+Play a YouTube video:
+```
+$ youtube-dl https://www.youtube.com/watch?v=dQw4w9WgXcQ -o tempvideo
+$ ffmpeg -i tempvideo.mkv -f sixel -pix_fmt rgb24 -s 320x240 - -f alsa -ac 2 pulse
 ```

@@ -115,7 +115,7 @@ detected:
 }
 
 static SIXELSTATUS prepare_static_palette(SIXELContext *const c,
-                                          AVCodecContext *const codec)
+                                          AVCodecParameters *const par)
 {
     if (c->dither) {
         sixel_dither_set_body_only(c->dither, 1);
@@ -196,7 +196,7 @@ static void scroll_on_demand(int pixelheight,
 
 
 static SIXELSTATUS prepare_dynamic_palette(SIXELContext *const c,
-                                           AVCodecContext *const codec,
+                                           AVCodecParameters *const par,
                                            AVPacket *const pkt)
 {
     SIXELSTATUS status = SIXEL_FALSE;
@@ -204,7 +204,7 @@ static SIXELSTATUS prepare_dynamic_palette(SIXELContext *const c,
     /* create histgram and construct color palette
      * with median cut algorithm. */
     status = sixel_dither_initialize(c->testdither, pkt->data,
-                                     codec->width, codec->height, 3,
+                                     par->width, par->height, 3,
                                      LARGE_NORM, REP_CENTER_BOX,
                                      QUALITY_LOW);
     if (SIXEL_FAILED(status))
@@ -241,24 +241,24 @@ static int sixel_write(char *data, int size, void *priv)
 static int sixel_write_header(AVFormatContext *s)
 {
     SIXELContext *c = s->priv_data;
-    AVCodecContext *codec = s->streams[0]->codec;
+    AVCodecParameters *par = s->streams[0]->codecpar;
     SIXELSTATUS status = SIXEL_FALSE;
 
     if (s->nb_streams > 1
-        || codec->codec_type != AVMEDIA_TYPE_VIDEO
-        || codec->codec_id   != CODEC_ID_RAWVIDEO) {
+        || par->codec_type != AVMEDIA_TYPE_VIDEO
+        || par->codec_id   != AV_CODEC_ID_RAWVIDEO) {
         av_log(s, AV_LOG_ERROR, "Only supports one rawvideo stream\n");
         return AVERROR(EINVAL);
     }
 
-    if (codec->pix_fmt != PIX_FMT_RGB24) {
+    if (par->format  != AV_PIX_FMT_RGB24) {
         av_log(s, AV_LOG_ERROR,
                "Unsupported pixel format '%s', choose rgb24\n",
-               av_get_pix_fmt_name(codec->pix_fmt));
+               av_get_pix_fmt_name(par->format));
         return AVERROR(EINVAL);
     }
 
-    if (!s->filename || strcmp(s->filename, "pipe:") == 0) {
+    if (!s->url || strcmp(s->url, "pipe:") == 0) {
         sixel_output_file = stdout;
 #if defined(LIBSIXEL_LEGACY_API)
         c->output = sixel_output_create(sixel_write, stdout);
@@ -267,7 +267,7 @@ static int sixel_write_header(AVFormatContext *s)
         status = sixel_output_new(&c->output, sixel_write, stdout, NULL);
 #endif
     } else {
-        sixel_output_file = fopen(s->filename, "w");
+        sixel_output_file = fopen(s->url, "w");
 #if defined(LIBSIXEL_LEGACY_API)
         c->output = sixel_output_create(sixel_write, sixel_output_file);
         status = c->output == NULL ? SIXEL_FALSE: SIXEL_OK;
@@ -307,7 +307,7 @@ static int sixel_write_header(AVFormatContext *s)
         return AVERROR_EXTERNAL;
     }
 
-    c->time_base = s->streams[0]->codec->time_base;
+    c->time_base = s->streams[0]->time_base;
     c->time_frame = av_gettime() / av_q2d(c->time_base);
 
     return 0;
@@ -316,7 +316,7 @@ static int sixel_write_header(AVFormatContext *s)
 static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
 {
     SIXELContext * const c = s->priv_data;
-    AVCodecContext * const codec = s->streams[0]->codec;
+    AVCodecParameters * const par = s->streams[0]->codecpar;
     int64_t curtime, delay;
     struct timespec ts;
     int late_threshold;
@@ -343,15 +343,15 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
 
     if (dirty == 0) {
-        scroll_on_demand(codec->height, c->top, c->left);
+        scroll_on_demand(par->height, c->top, c->left);
         dirty = 1;
     }
     fprintf(sixel_output_file, "\0338");
 
     if (c->fixedpal) {
-        status = prepare_static_palette(c, codec);
+        status = prepare_static_palette(c, par);
     } else {
-        status = prepare_dynamic_palette(c, codec, pkt);
+        status = prepare_dynamic_palette(c, par, pkt);
     }
     if (SIXEL_FAILED(status)) {
 #if !defined(LIBSIXEL_LEGACY_API)
@@ -359,7 +359,7 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
 #endif
         return AVERROR_EXTERNAL;
     }
-    status = sixel_encode(pkt->data, codec->width, codec->height,
+    status = sixel_encode(pkt->data, par->width, par->height,
                           PIXELFORMAT_RGB888,
                           c->dither, c->output);
     if (SIXEL_FAILED(status)) {
@@ -443,8 +443,8 @@ AVOutputFormat ff_sixel_muxer = {
     .name           = "sixel",
     .long_name      = NULL_IF_CONFIG_SMALL("SIXEL terminal device"),
     .priv_data_size = sizeof(SIXELContext),
-    .audio_codec    = CODEC_ID_NONE,
-    .video_codec    = CODEC_ID_RAWVIDEO,
+    .audio_codec    = AV_CODEC_ID_NONE,
+    .video_codec    = AV_CODEC_ID_RAWVIDEO,
     .write_header   = sixel_write_header,
     .write_packet   = sixel_write_packet,
     .write_trailer  = sixel_write_trailer,

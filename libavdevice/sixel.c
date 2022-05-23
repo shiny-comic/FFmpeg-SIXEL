@@ -69,22 +69,22 @@ static int detect_scene_change(SIXELContext *const c)
     static unsigned int average_r = 0;
     static unsigned int average_g = 0;
     static unsigned int average_b = 0;
-    static int previous_histgram_colors = 0;
-    int histgram_colors = 0;
+    static int previous_histogram_colors = 0;
+    int histogram_colors = 0;
     int palette_colors = 0;
     unsigned char const* palette;
 
-    histgram_colors = sixel_dither_get_num_of_histogram_colors(c->testdither);
+    histogram_colors = sixel_dither_get_num_of_histogram_colors(c->testdither);
 
     if (c->dither == NULL)
         goto detected;
 
     /* detect scene change if number of colors increses 20% */
-    if (previous_histgram_colors * 6 < histgram_colors * 5)
+    if (previous_histogram_colors * 6 < histogram_colors * 5)
         goto detected;
 
     /* detect scene change if number of colors decreses 20% */
-    if (previous_histgram_colors * 4 > histgram_colors * 5)
+    if (previous_histogram_colors * 4 > histogram_colors * 5)
         goto detected;
 
     palette_colors = sixel_dither_get_num_of_palette_colors(c->testdither);
@@ -107,7 +107,7 @@ static int detect_scene_change(SIXELContext *const c)
     return 0;
 
 detected:
-    previous_histgram_colors = histgram_colors;
+    previous_histogram_colors = histogram_colors;
     average_r = r;
     average_g = g;
     average_b = b;
@@ -120,7 +120,7 @@ static SIXELSTATUS prepare_static_palette(SIXELContext *const c,
     if (c->dither) {
         sixel_dither_set_body_only(c->dither, 1);
     } else {
-        c->dither = sixel_dither_get(BUILTIN_XTERM256);
+        c->dither = sixel_dither_get(c->fixedpal);
         if (c->dither == NULL)
             return SIXEL_FALSE;
         sixel_dither_set_diffusion_type(c->dither, c->diffuse);
@@ -201,12 +201,13 @@ static SIXELSTATUS prepare_dynamic_palette(SIXELContext *const c,
 {
     SIXELSTATUS status = SIXEL_FALSE;
 
-    /* create histgram and construct color palette
+    /* create histogram and construct color palette
      * with median cut algorithm. */
     status = sixel_dither_initialize(c->testdither, pkt->data,
-                                     par->width, par->height, 3,
-                                     LARGE_NORM, REP_CENTER_BOX,
-                                     QUALITY_LOW);
+                                     par->width, par->height,
+                                     SIXEL_PIXELFORMAT_RGB888,
+                                     SIXEL_LARGE_NORM, SIXEL_REP_CENTER_BOX,
+                                     SIXEL_QUALITY_LOW);
     if (SIXEL_FAILED(status))
         return status;
 
@@ -348,7 +349,7 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
     }
     fprintf(sixel_output_file, "\0338");
 
-    if (c->fixedpal) {
+    if (c->fixedpal != -1) {
         status = prepare_static_palette(c, par);
     } else {
         status = prepare_dynamic_palette(c, par, pkt);
@@ -360,7 +361,7 @@ static int sixel_write_packet(AVFormatContext *s, AVPacket *pkt)
         return AVERROR_EXTERNAL;
     }
     status = sixel_encode(pkt->data, par->width, par->height,
-                          PIXELFORMAT_RGB888,
+                          SIXEL_PIXELFORMAT_RGB888,
                           c->dither, c->output);
     if (SIXEL_FAILED(status)) {
 #if !defined(LIBSIXEL_LEGACY_API)
@@ -406,27 +407,36 @@ static int sixel_write_trailer(AVFormatContext *s)
 #define OFFSET(x) offsetof(SIXELContext, x)
 #define ENC AV_OPT_FLAG_ENCODING_PARAM
 static const AVOption options[] = {
-    { "left",            "left position",          OFFSET(left),        AV_OPT_TYPE_INT,    {.i64 = 0},                0, 256,  ENC },
-    { "top",             "top position",           OFFSET(top),         AV_OPT_TYPE_INT,    {.i64 = 0},                0, 256,  ENC },
-    { "reqcolors",       "number of colors",       OFFSET(reqcolors),   AV_OPT_TYPE_INT,    {.i64 = 16},               2, 256,  ENC },
-    { "fixedpal",        "use fixed palette",      OFFSET(fixedpal),    AV_OPT_TYPE_INT,    {.i64 = 0},                0, 1,    ENC, "fixedpal" },
-    { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                0, 0,    ENC, "fixedpal" },
-    { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                0, 0,    ENC, "fixedpal" },
-    { "diffuse",         "dithering method",       OFFSET(diffuse),     AV_OPT_TYPE_INT,    {.i64 = DIFFUSE_ATKINSON}, 1, 6,    ENC, "diffuse" },
-    { "none",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_NONE},     0, 0,    ENC, "diffuse" },
-    { "fs",              NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_FS},       0, 0,    ENC, "diffuse" },
-    { "atkinson",        NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_ATKINSON}, 0, 0,    ENC, "diffuse" },
-    { "jajuni",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_JAJUNI},   0, 0,    ENC, "diffuse" },
-    { "stucki",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_STUCKI},   0, 0,    ENC, "diffuse" },
-    { "burkes",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = DIFFUSE_BURKES},   0, 0,    ENC, "diffuse" },
+    { "left",            "left position",          OFFSET(left),        AV_OPT_TYPE_INT,    {.i64 = 0},                         0, 256,  ENC },
+    { "top",             "top position",           OFFSET(top),         AV_OPT_TYPE_INT,    {.i64 = 0},                         0, 256,  ENC },
+    { "reqcolors",       "number of colors",       OFFSET(reqcolors),   AV_OPT_TYPE_INT,    {.i64 = 16},                        2, 256,  ENC },
+    { "fixedpal",        "use fixed palette",      OFFSET(fixedpal),    AV_OPT_TYPE_INT,    {.i64 = -1},                        -1, 9,   ENC, "fixedpal" },
+    { "dynamic",         NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = -1},                        0, 0,    ENC, "fixedpal" },
+    { "mono-dark",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_MONO_DARK},   0, 0,    ENC, "fixedpal" },
+    { "mono-light",      NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_MONO_LIGHT},  0, 0,    ENC, "fixedpal" },
+    { "xterm16",         NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_XTERM16},     0, 0,    ENC, "fixedpal" },
+    { "xterm256",        NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_XTERM256},    0, 0,    ENC, "fixedpal" },
+    { "vt340mono",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_VT340_MONO},  0, 0,    ENC, "fixedpal" },
+    { "vt340color",      NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_VT340_COLOR}, 0, 0,    ENC, "fixedpal" },
+    { "1bit-gray",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_G1},          0, 0,    ENC, "fixedpal" },
+    { "2bit-gray",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_G2},          0, 0,    ENC, "fixedpal" },
+    { "4bit-gray",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_G4},          0, 0,    ENC, "fixedpal" },
+    { "8bit-gray",       NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_BUILTIN_G8},          0, 0,    ENC, "fixedpal" },
+    { "diffuse",         "dithering method",       OFFSET(diffuse),     AV_OPT_TYPE_INT,    {.i64 = SIXEL_DIFFUSE_ATKINSON},    1, 6,    ENC, "diffuse" },
+    { "none",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_NONE},        0, 0,    ENC, "diffuse" },
+    { "fs",              NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_FS},          0, 0,    ENC, "diffuse" },
+    { "atkinson",        NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_ATKINSON},    0, 0,    ENC, "diffuse" },
+    { "jajuni",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_JAJUNI},      0, 0,    ENC, "diffuse" },
+    { "stucki",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_STUCKI},      0, 0,    ENC, "diffuse" },
+    { "burkes",          NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = SIXEL_DIFFUSE_BURKES},      0, 0,    ENC, "diffuse" },
 #if 0  /* for debugging */
-    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 500},              0, 10000,ENC },
-    { "dropframe",       "drop late frames",       OFFSET(dropframe),   AV_OPT_TYPE_INT,    {.i64 = 1},                0, 1,    ENC, "dropframe" },
-    { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                0, 0,    ENC, "dropframe" },
-    { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                0, 0,    ENC, "dropframe" },
-    { "ignoredelay",     "ignore frame timestamp", OFFSET(ignoredelay), AV_OPT_TYPE_INT,    {.i64 = 0},                0, 1,    ENC, "ignoredelay" },
-    { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                0, 0,    ENC, "ignoredelay" },
-    { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                0, 0,    ENC, "ignoredelay" },
+    { "scene-threshold", "scene change threshold", OFFSET(threshold),   AV_OPT_TYPE_INT,    {.i64 = 500},                       0, 10000,ENC },
+    { "dropframe",       "drop late frames",       OFFSET(dropframe),   AV_OPT_TYPE_INT,    {.i64 = 1},                         0, 1,    ENC, "dropframe" },
+    { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                         0, 0,    ENC, "dropframe" },
+    { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                         0, 0,    ENC, "dropframe" },
+    { "ignoredelay",     "ignore frame timestamp", OFFSET(ignoredelay), AV_OPT_TYPE_INT,    {.i64 = 0},                         0, 1,    ENC, "ignoredelay" },
+    { "true",            NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 1},                         0, 0,    ENC, "ignoredelay" },
+    { "false",           NULL,                     0,                   AV_OPT_TYPE_CONST,  {.i64 = 0},                         0, 0,    ENC, "ignoredelay" },
 #endif
     { NULL },
 };

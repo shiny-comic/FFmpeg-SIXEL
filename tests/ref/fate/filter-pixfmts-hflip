@@ -54,6 +54,7 @@ gray9le             424fc581947bc8c357c9ec5e3c1c04d1
 grayf32be           a69add7bbf892a71fe81b3b75982dbe2
 grayf32le           4563e176a35dc8a8a07e0829fad5eb88
 nv12                801e58f1be5fd0b5bc4bf007c604b0b4
+nv16                06ba714cb8b220c203f5898ef39abf93
 nv21                9f10dfff8963dc327d3395af21f0554f
 nv24                f0c5b2f42970f8d4003621d8857a872f
 nv42                4dcf9aec82b110712b396a8b365dcb13
@@ -85,6 +86,7 @@ rgb8                68a3a575badadd9e4f90226209f11699
 rgba                51961c723ea6707e0a410cd3f21f15d3
 rgba64be            c910444019f4cfbf4d995227af55da8d
 rgba64le            0c810d8b3a6bca10321788e1cb145340
+vuya                08deadfdd61c39a3ed471acce9d69a4b
 x2bgr10le           827cc659f29378e00c5a7d2c0ada8f9a
 x2rgb10le           d4a8189b65395a88d0a38a7053f3359f
 xyz12be             25f90259ff8a226befdaec3dfe82996e

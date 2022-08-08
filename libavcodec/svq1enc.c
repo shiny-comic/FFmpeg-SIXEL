@@ -91,7 +91,7 @@ static int ssd_int8_vs_int16_c(const int8_t *pix1, const int16_t *pix2,
 }
 
 static int encode_block(SVQ1EncContext *s, uint8_t *src, uint8_t *ref,
-                        uint8_t *decoded, int stride, int level,
+                        uint8_t *decoded, int stride, unsigned level,
                         int threshold, int lambda, int intra)
 {
     int count, y, x, i, j, split, best_mean, best_score, best_count;
@@ -248,7 +248,7 @@ static void init_block_index(MpegEncContext *s){
 }
 
 static int svq1_encode_plane(SVQ1EncContext *s, int plane,
-                             unsigned char *src_plane,
+                             const unsigned char *src_plane,
                              unsigned char *ref_plane,
                              unsigned char *decoded_plane,
                              int width, int height, int src_stride, int stride)
@@ -371,7 +371,7 @@ static int svq1_encode_plane(SVQ1EncContext *s, int plane,
             int count[2][6];
             int offset       = y * 16 * stride + x * 16;
             uint8_t *decoded = decoded_plane + offset;
-            uint8_t *ref     = ref_plane + offset;
+            const uint8_t *ref = ref_plane + offset;
             int score[4]     = { 0, 0, 0, 0 }, best;
             uint8_t *temp    = s->scratchbuf;
 
@@ -568,10 +568,11 @@ static av_cold int svq1_encode_init(AVCodecContext *avctx)
         return AVERROR(ENOMEM);
     }
 
-    if (ARCH_PPC)
-        ff_svq1enc_init_ppc(s);
-    if (ARCH_X86)
-        ff_svq1enc_init_x86(s);
+#if ARCH_PPC
+    ff_svq1enc_init_ppc(s);
+#elif ARCH_X86
+    ff_svq1enc_init_x86(s);
+#endif
 
     ff_h263_encode_init(&s->m); // mv_penalty
 
@@ -688,5 +689,5 @@ const FFCodec ff_svq1_encoder = {
     .close          = svq1_encode_end,
     .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV410P,
                                                      AV_PIX_FMT_NONE },
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

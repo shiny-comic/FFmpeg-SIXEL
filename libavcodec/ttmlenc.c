@@ -45,7 +45,7 @@ typedef struct {
 static void ttml_text_cb(void *priv, const char *text, int len)
 {
     TTMLContext *s = priv;
-    AVBPrint cur_line = { 0 };
+    AVBPrint cur_line;
     AVBPrint *buffer = &s->buffer;
 
     av_bprint_init(&cur_line, len, AV_BPRINT_SIZE_UNLIMITED);
@@ -385,7 +385,7 @@ static av_cold int ttml_encode_init(AVCodecContext *avctx)
 
 const FFCodec ff_ttml_encoder = {
     .p.name         = "ttml",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("TTML subtitle"),
+    CODEC_LONG_NAME("TTML subtitle"),
     .p.type         = AVMEDIA_TYPE_SUBTITLE,
     .p.id           = AV_CODEC_ID_TTML,
     .priv_data_size = sizeof(TTMLContext),

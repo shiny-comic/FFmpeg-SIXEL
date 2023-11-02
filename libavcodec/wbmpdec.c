@@ -21,7 +21,7 @@
 #include "avcodec.h"
 #include "bytestream.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 #include "thread.h"
 
 static unsigned int getv(GetByteContext * gb)
@@ -72,9 +72,9 @@ static int wbmp_decode_frame(AVCodecContext *avctx, AVFrame *p,
     if (p->linesize[0] == (width + 7) / 8)
         bytestream2_get_buffer(&gb, p->data[0], height * ((width + 7) / 8));
     else
-        readbits(p->data[0], width, height, p->linesize[0], gb.buffer, gb.buffer_end - gb.buffer_start);
+        readbits(p->data[0], width, height, p->linesize[0], gb.buffer, gb.buffer_end - gb.buffer);
 
-    p->key_frame = 1;
+    p->flags |= AV_FRAME_FLAG_KEY;
     p->pict_type = AV_PICTURE_TYPE_I;
 
     *got_frame   = 1;
@@ -84,7 +84,7 @@ static int wbmp_decode_frame(AVCodecContext *avctx, AVFrame *p,
 
 const FFCodec ff_wbmp_decoder = {
     .p.name         = "wbmp",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("WBMP (Wireless Application Protocol Bitmap) image"),
+    CODEC_LONG_NAME("WBMP (Wireless Application Protocol Bitmap) image"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_WBMP,
     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,

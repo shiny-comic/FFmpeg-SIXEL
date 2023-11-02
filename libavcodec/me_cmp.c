@@ -473,8 +473,9 @@ static int zero_cmp(MpegEncContext *s, const uint8_t *a, const uint8_t *b,
     return 0;
 }
 
-void ff_set_cmp(MECmpContext *c, me_cmp_func *cmp, int type)
+int ff_set_cmp(MECmpContext *c, me_cmp_func *cmp, int type)
 {
+    int ret = 0;
     int i;
 
     memset(cmp, 0, sizeof(void *) * 6);
@@ -533,9 +534,13 @@ void ff_set_cmp(MECmpContext *c, me_cmp_func *cmp, int type)
 #endif
         default:
             av_log(NULL, AV_LOG_ERROR,
-                   "internal error in cmp function selection\n");
+                   "invalid cmp function selection\n");
+            ret = -1;
+            break;
         }
     }
+
+    return ret;
 }
 
 #define BUTTERFLY2(o1, o2, i1, i2)              \
@@ -557,8 +562,6 @@ static int hadamard8_diff8x8_c(MpegEncContext *s, const uint8_t *dst,
                                const uint8_t *src, ptrdiff_t stride, int h)
 {
     int i, temp[64], sum = 0;
-
-    av_assert2(h == 8);
 
     for (i = 0; i < 8; i++) {
         // FIXME: try pointer walks
@@ -610,8 +613,6 @@ static int hadamard8_intra8x8_c(MpegEncContext *s, const uint8_t *src,
 {
     int i, temp[64], sum = 0;
 
-    av_assert2(h == 8);
-
     for (i = 0; i < 8; i++) {
         // FIXME: try pointer walks
         BUTTERFLY2(temp[8 * i + 0], temp[8 * i + 1],
@@ -661,8 +662,6 @@ static int dct_sad8x8_c(MpegEncContext *s, const uint8_t *src1,
                         const uint8_t *src2, ptrdiff_t stride, int h)
 {
     LOCAL_ALIGNED_16(int16_t, temp, [64]);
-
-    av_assert2(h == 8);
 
     s->pdsp.diff_pixels_unaligned(temp, src1, src2, stride);
     s->fdsp.fdct(temp);
@@ -729,8 +728,6 @@ static int dct_max8x8_c(MpegEncContext *s, const uint8_t *src1,
     LOCAL_ALIGNED_16(int16_t, temp, [64]);
     int sum = 0, i;
 
-    av_assert2(h == 8);
-
     s->pdsp.diff_pixels_unaligned(temp, src1, src2, stride);
     s->fdsp.fdct(temp);
 
@@ -747,7 +744,6 @@ static int quant_psnr8x8_c(MpegEncContext *s, const uint8_t *src1,
     int16_t *const bak = temp + 64;
     int sum = 0, i;
 
-    av_assert2(h == 8);
     s->mb_intra = 0;
 
     s->pdsp.diff_pixels_unaligned(temp, src1, src2, stride);
@@ -775,8 +771,6 @@ static int rd8x8_c(MpegEncContext *s, const uint8_t *src1, const uint8_t *src2,
     int i, last, run, bits, level, distortion, start_i;
     const int esc_length = s->ac_esc_length;
     uint8_t *length, *last_length;
-
-    av_assert2(h == 8);
 
     copy_block8(lsrc1, src1, 8, stride, 8);
     copy_block8(lsrc2, src2, 8, stride, 8);
@@ -850,8 +844,6 @@ static int bit8x8_c(MpegEncContext *s, const uint8_t *src1, const uint8_t *src2,
     int i, last, run, bits, level, start_i;
     const int esc_length = s->ac_esc_length;
     uint8_t *length, *last_length;
-
-    av_assert2(h == 8);
 
     s->pdsp.diff_pixels_unaligned(temp, src1, src2, stride);
 
@@ -1061,6 +1053,9 @@ av_cold void ff_me_cmp_init(MECmpContext *c, AVCodecContext *avctx)
     ff_dsputil_init_dwt(c);
 #endif
 
+    c->median_sad[0] = pix_median_abs16_c;
+    c->median_sad[1] = pix_median_abs8_c;
+
 #if ARCH_AARCH64
     ff_me_cmp_init_aarch64(c, avctx);
 #elif ARCH_ALPHA
@@ -1075,6 +1070,4 @@ av_cold void ff_me_cmp_init(MECmpContext *c, AVCodecContext *avctx)
     ff_me_cmp_init_mips(c, avctx);
 #endif
 
-    c->median_sad[0] = pix_median_abs16_c;
-    c->median_sad[1] = pix_median_abs8_c;
 }

@@ -309,6 +309,7 @@ int ff_init_me(MpegEncContext *s){
     MotionEstContext * const c= &s->me;
     int cache_size= FFMIN(ME_MAP_SIZE>>ME_MAP_SHIFT, 1<<ME_MAP_SHIFT);
     int dia_size= FFMAX(FFABS(s->avctx->dia_size)&255, FFABS(s->avctx->pre_dia_size)&255);
+    int ret;
 
     if(FFMIN(s->avctx->dia_size, s->avctx->pre_dia_size) < -FFMIN(ME_MAP_SIZE, MAX_SAB_SIZE)){
         av_log(s->avctx, AV_LOG_ERROR, "ME_MAP size is too small for SAB diamond\n");
@@ -324,10 +325,12 @@ int ff_init_me(MpegEncContext *s){
         av_log(s->avctx, AV_LOG_INFO, "ME_MAP size may be a little small for the selected diamond size\n");
     }
 
-    ff_set_cmp(&s->mecc, s->mecc.me_pre_cmp, c->avctx->me_pre_cmp);
-    ff_set_cmp(&s->mecc, s->mecc.me_cmp,     c->avctx->me_cmp);
-    ff_set_cmp(&s->mecc, s->mecc.me_sub_cmp, c->avctx->me_sub_cmp);
-    ff_set_cmp(&s->mecc, s->mecc.mb_cmp,     c->avctx->mb_cmp);
+    ret  = ff_set_cmp(&s->mecc, s->mecc.me_pre_cmp, c->avctx->me_pre_cmp);
+    ret |= ff_set_cmp(&s->mecc, s->mecc.me_cmp,     c->avctx->me_cmp);
+    ret |= ff_set_cmp(&s->mecc, s->mecc.me_sub_cmp, c->avctx->me_sub_cmp);
+    ret |= ff_set_cmp(&s->mecc, s->mecc.mb_cmp,     c->avctx->mb_cmp);
+    if (ret < 0)
+        return ret;
 
     c->flags    = get_flags(c, 0, c->avctx->me_cmp    &FF_CMP_CHROMA);
     c->sub_flags= get_flags(c, 0, c->avctx->me_sub_cmp&FF_CMP_CHROMA);
@@ -895,7 +898,6 @@ void ff_estimate_p_frame_motion(MpegEncContext * s,
     int P[10][2];
     const int shift= 1+s->quarter_sample;
     int mb_type=0;
-    Picture * const pic= &s->current_picture;
 
     init_ref(c, s->new_picture->data, s->last_picture.f->data, NULL, 16*mb_x, 16*mb_y, 0);
 
@@ -917,8 +919,8 @@ void ff_estimate_p_frame_motion(MpegEncContext * s,
     varc = s->mpvencdsp.pix_norm1(pix, s->linesize) -
            (((unsigned) sum * sum) >> 8) + 500;
 
-    pic->mb_mean[s->mb_stride * mb_y + mb_x] = (sum+128)>>8;
-    pic->mb_var [s->mb_stride * mb_y + mb_x] = (varc+128)>>8;
+    s->mb_mean[s->mb_stride * mb_y + mb_x] = (sum+128)>>8;
+    s->mb_var [s->mb_stride * mb_y + mb_x] = (varc+128)>>8;
     c->mb_var_sum_temp += (varc+128)>>8;
 
     if (s->motion_est != FF_ME_ZERO) {
@@ -965,7 +967,7 @@ void ff_estimate_p_frame_motion(MpegEncContext * s,
 
     vard = s->mecc.sse[0](NULL, pix, ppix, s->linesize, 16);
 
-    pic->mc_mb_var[s->mb_stride * mb_y + mb_x] = (vard+128)>>8;
+    s->mc_mb_var[s->mb_stride * mb_y + mb_x] = (vard+128)>>8;
     c->mc_mb_var_sum_temp += (vard+128)>>8;
 
     if (c->avctx->mb_decision > FF_MB_DECISION_SIMPLE) {
@@ -1509,7 +1511,7 @@ void ff_estimate_b_frame_motion(MpegEncContext * s,
 
         score= ((unsigned)(score*score + 128*256))>>16;
         c->mc_mb_var_sum_temp += score;
-        s->current_picture.mc_mb_var[mb_y*s->mb_stride + mb_x] = score; //FIXME use SSE
+        s->mc_mb_var[mb_y*s->mb_stride + mb_x] = score; //FIXME use SSE
         s->mb_type[mb_y*s->mb_stride + mb_x]= CANDIDATE_MB_TYPE_DIRECT0;
 
         return;
@@ -1574,7 +1576,7 @@ void ff_estimate_b_frame_motion(MpegEncContext * s,
 
         score= ((unsigned)(score*score + 128*256))>>16;
         c->mc_mb_var_sum_temp += score;
-        s->current_picture.mc_mb_var[mb_y*s->mb_stride + mb_x] = score; //FIXME use SSE
+        s->mc_mb_var[mb_y*s->mb_stride + mb_x] = score; //FIXME use SSE
     }
 
     if(c->avctx->mb_decision > FF_MB_DECISION_SIMPLE){
@@ -1629,7 +1631,8 @@ int ff_get_best_fcode(MpegEncContext * s, const int16_t (*mv_table)[2], int type
                         continue;
 
                     for(j=0; j<fcode && j<8; j++){
-                        if(s->pict_type==AV_PICTURE_TYPE_B || s->current_picture.mc_mb_var[xy] < s->current_picture.mb_var[xy])
+                        if (s->pict_type == AV_PICTURE_TYPE_B ||
+                            s->mc_mb_var[xy] < s->mb_var[xy])
                             score[j]-= 170;
                     }
                 }

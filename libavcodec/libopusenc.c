@@ -29,8 +29,8 @@
 #include "codec_internal.h"
 #include "encode.h"
 #include "libopus.h"
-#include "vorbis.h"
 #include "audio_frame_queue.h"
+#include "vorbis_data.h"
 
 typedef struct LibopusEncOpts {
     int vbr;
@@ -512,18 +512,14 @@ static int libopus_encode(AVCodecContext *avctx, AVPacket *avpkt,
 
     discard_padding = opus->opts.packet_size - avpkt->duration;
     // Check if subtraction resulted in an overflow
-    if ((discard_padding < opus->opts.packet_size) != (avpkt->duration > 0)) {
-        av_packet_unref(avpkt);
+    if ((discard_padding < opus->opts.packet_size) != (avpkt->duration > 0))
         return AVERROR(EINVAL);
-    }
     if (discard_padding > 0) {
         uint8_t* side_data = av_packet_new_side_data(avpkt,
                                                      AV_PKT_DATA_SKIP_SAMPLES,
                                                      10);
-        if(!side_data) {
-            av_packet_unref(avpkt);
+        if (!side_data)
             return AVERROR(ENOMEM);
-        }
         AV_WL32(side_data + 4, discard_padding);
     }
 
@@ -551,7 +547,7 @@ static const AVOption libopus_options[] = {
     { "application",    "Intended application type",           OFFSET(application),    AV_OPT_TYPE_INT,   { .i64 = OPUS_APPLICATION_AUDIO }, OPUS_APPLICATION_VOIP, OPUS_APPLICATION_RESTRICTED_LOWDELAY, FLAGS, "application" },
         { "voip",           "Favor improved speech intelligibility",   0, AV_OPT_TYPE_CONST, { .i64 = OPUS_APPLICATION_VOIP },                0, 0, FLAGS, "application" },
         { "audio",          "Favor faithfulness to the input",         0, AV_OPT_TYPE_CONST, { .i64 = OPUS_APPLICATION_AUDIO },               0, 0, FLAGS, "application" },
-        { "lowdelay",       "Restrict to only the lowest delay modes", 0, AV_OPT_TYPE_CONST, { .i64 = OPUS_APPLICATION_RESTRICTED_LOWDELAY }, 0, 0, FLAGS, "application" },
+        { "lowdelay",       "Restrict to only the lowest delay modes, disable voice-optimized modes", 0, AV_OPT_TYPE_CONST, { .i64 = OPUS_APPLICATION_RESTRICTED_LOWDELAY }, 0, 0, FLAGS, "application" },
     { "frame_duration", "Duration of a frame in milliseconds", OFFSET(frame_duration), AV_OPT_TYPE_FLOAT, { .dbl = 20.0 }, 2.5, 120.0, FLAGS },
     { "packet_loss",    "Expected packet loss percentage",     OFFSET(packet_loss),    AV_OPT_TYPE_INT,   { .i64 = 0 },    0,   100,  FLAGS },
     { "fec",             "Enable inband FEC. Expected packet loss must be non-zero",     OFFSET(fec),    AV_OPT_TYPE_BOOL,   { .i64 = 0 }, 0, 1, FLAGS },
@@ -585,15 +581,16 @@ static const int libopus_sample_rates[] = {
 
 const FFCodec ff_libopus_encoder = {
     .p.name          = "libopus",
-    .p.long_name     = NULL_IF_CONFIG_SMALL("libopus Opus"),
+    CODEC_LONG_NAME("libopus Opus"),
     .p.type          = AVMEDIA_TYPE_AUDIO,
     .p.id            = AV_CODEC_ID_OPUS,
+    .p.capabilities  = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY |
+                       AV_CODEC_CAP_SMALL_LAST_FRAME,
     .caps_internal   = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size  = sizeof(LibopusEncContext),
     .init            = libopus_encode_init,
     FF_CODEC_ENCODE_CB(libopus_encode),
     .close           = libopus_encode_close,
-    .p.capabilities  = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_SMALL_LAST_FRAME,
     .p.sample_fmts   = (const enum AVSampleFormat[]){ AV_SAMPLE_FMT_S16,
                                                       AV_SAMPLE_FMT_FLT,
                                                       AV_SAMPLE_FMT_NONE },

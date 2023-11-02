@@ -23,12 +23,11 @@
  * VP5 compatible video decoder
  */
 
-#include <stdlib.h>
 #include <string.h>
 
 #include "avcodec.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 
 #include "vp56.h"
 #include "vp56data.h"
@@ -45,10 +44,13 @@ static int vp5_parse_header(VP56Context *s, const uint8_t *buf, int buf_size)
     ret = ff_vpx_init_range_decoder(&s->c, buf, buf_size);
     if (ret < 0)
         return ret;
-    s->frames[VP56_FRAME_CURRENT]->key_frame = !vpx_rac_get(c);
+    if (!vpx_rac_get(c))
+        s->frames[VP56_FRAME_CURRENT]->flags |= AV_FRAME_FLAG_KEY;
+    else
+        s->frames[VP56_FRAME_CURRENT]->flags &= ~AV_FRAME_FLAG_KEY;
     vpx_rac_get(c);
     ff_vp56_init_dequant(s, vp56_rac_gets(c, 6));
-    if (s->frames[VP56_FRAME_CURRENT]->key_frame)
+    if (s->frames[VP56_FRAME_CURRENT]->flags & AV_FRAME_FLAG_KEY)
     {
         int render_x, render_y;
 
@@ -149,7 +151,7 @@ static int vp5_parse_coeff_models(VP56Context *s)
             if (vpx_rac_get_prob_branchy(c, vp5_dccv_pct[pt][node])) {
                 def_prob[node] = vp56_rac_gets_nn(c, 7);
                 model->coeff_dccv[pt][node] = def_prob[node];
-            } else if (s->frames[VP56_FRAME_CURRENT]->key_frame) {
+            } else if (s->frames[VP56_FRAME_CURRENT]->flags & AV_FRAME_FLAG_KEY) {
                 model->coeff_dccv[pt][node] = def_prob[node];
             }
 
@@ -160,7 +162,7 @@ static int vp5_parse_coeff_models(VP56Context *s)
                     if (vpx_rac_get_prob_branchy(c, vp5_ract_pct[ct][pt][cg][node])) {
                         def_prob[node] = vp56_rac_gets_nn(c, 7);
                         model->coeff_ract[pt][ct][cg][node] = def_prob[node];
-                    } else if (s->frames[VP56_FRAME_CURRENT]->key_frame) {
+                    } else if (s->frames[VP56_FRAME_CURRENT]->flags & AV_FRAME_FLAG_KEY) {
                         model->coeff_ract[pt][ct][cg][node] = def_prob[node];
                     }
 
@@ -306,7 +308,7 @@ static av_cold int vp56_free(AVCodecContext *avctx)
 
 const FFCodec ff_vp5_decoder = {
     .p.name         = "vp5",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("On2 VP5"),
+    CODEC_LONG_NAME("On2 VP5"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_VP5,
     .priv_data_size = sizeof(VP56Context),

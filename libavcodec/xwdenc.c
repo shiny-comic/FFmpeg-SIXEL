@@ -213,10 +213,10 @@ static int xwd_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
 const FFCodec ff_xwd_encoder = {
     .p.name         = "xwd",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("XWD (X Window Dump) image"),
+    CODEC_LONG_NAME("XWD (X Window Dump) image"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_XWD,
-    .p.capabilities = AV_CODEC_CAP_DR1,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     FF_CODEC_ENCODE_CB(xwd_encode_frame),
     .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_BGRA,
                                                  AV_PIX_FMT_RGBA,

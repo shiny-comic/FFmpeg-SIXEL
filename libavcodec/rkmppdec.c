@@ -404,8 +404,10 @@ static int rkmpp_retrieve_frame(AVCodecContext *avctx, AVFrame *frame)
         frame->colorspace       = mpp_frame_get_colorspace(mppframe);
 
         mode = mpp_frame_get_mode(mppframe);
-        frame->interlaced_frame = ((mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK) == MPP_FRAME_FLAG_DEINTERLACED);
-        frame->top_field_first  = ((mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK) == MPP_FRAME_FLAG_TOP_FIRST);
+        if ((mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK) == MPP_FRAME_FLAG_DEINTERLACED)
+            frame->flags |= AV_FRAME_FLAG_INTERLACED;
+        if ((mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK) == MPP_FRAME_FLAG_TOP_FIRST)
+            frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
 
         mppformat = mpp_frame_get_fmt(mppframe);
         drmformat = rkmpp_get_frameformat(mppformat);
@@ -563,7 +565,7 @@ static const AVCodecHWConfigInternal *const rkmpp_hw_configs[] = {
     RKMPP_DEC_CLASS(NAME) \
     const FFCodec ff_##NAME##_rkmpp_decoder = { \
         .p.name         = #NAME "_rkmpp", \
-        .p.long_name    = NULL_IF_CONFIG_SMALL(#NAME " (rkmpp)"), \
+        CODEC_LONG_NAME(#NAME " (rkmpp)"), \
         .p.type         = AVMEDIA_TYPE_VIDEO, \
         .p.id           = ID, \
         .priv_data_size = sizeof(RKMPPDecodeContext), \

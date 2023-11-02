@@ -28,7 +28,6 @@
 
 #include <stdatomic.h>
 
-#include "libavutil/buffer.h"
 #include "libavutil/mem_internal.h"
 #include "libavutil/thread.h"
 
@@ -152,10 +151,9 @@ typedef struct VP8ThreadData {
 
 typedef struct VP8Frame {
     ThreadFrame tf;
-    AVBufferRef *seg_map;
+    uint8_t *seg_map; ///< RefStruct reference
 
-    AVBufferRef *hwaccel_priv_buf;
-    void *hwaccel_picture_private;
+    void *hwaccel_picture_private; ///< RefStruct reference
 } VP8Frame;
 
 #define MAX_THREADS 8
@@ -334,11 +332,6 @@ typedef struct VP8Context {
     void (*filter_mb_row)(AVCodecContext *avctx, void *tdata, int jobnr, int threadnr);
 
     int vp7;
-
-    /**
-     * Fade bit present in bitstream (VP7)
-     */
-    int fade_present;
 
     /**
      * Interframe DC prediction (VP7)

@@ -33,10 +33,27 @@
 #include "encode.h"
 #include "bswapdsp.h"
 #include "bytestream.h"
+#include "lossless_videoencdsp.h"
 #include "put_bits.h"
 #include "mathops.h"
 #include "utvideo.h"
 #include "huffman.h"
+
+typedef struct UtvideoContext {
+    const AVClass *class;
+    BswapDSPContext bdsp;
+    LLVidEncDSPContext llvidencdsp;
+
+    uint32_t frame_info_size, flags;
+    int      planes;
+    int      slices;
+    int      compression;
+    int      frame_pred;
+
+    ptrdiff_t slice_stride;
+    uint8_t  *slice_bits, *slice_buffer[4];
+    int       slice_bits_size;
+} UtvideoContext;
 
 typedef struct HuffEntry {
     uint16_t sym;
@@ -76,7 +93,6 @@ static av_cold int utvideo_encode_init(AVCodecContext *avctx)
     int i, subsampled_height;
     uint32_t original_format;
 
-    c->avctx           = avctx;
     c->frame_info_size = 4;
     c->slice_stride    = FFALIGN(avctx->width, 32);
 
@@ -645,15 +661,16 @@ static const AVClass utvideo_class = {
 
 const FFCodec ff_utvideo_encoder = {
     .p.name         = "utvideo",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Ut Video"),
+    CODEC_LONG_NAME("Ut Video"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_UTVIDEO,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(UtvideoContext),
     .p.priv_class   = &utvideo_class,
     .init           = utvideo_encode_init,
     FF_CODEC_ENCODE_CB(utvideo_encode_frame),
     .close          = utvideo_encode_close,
-    .p.capabilities = AV_CODEC_CAP_FRAME_THREADS,
     .p.pix_fmts     = (const enum AVPixelFormat[]) {
                           AV_PIX_FMT_GBRP, AV_PIX_FMT_GBRAP, AV_PIX_FMT_YUV422P,
                           AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV444P, AV_PIX_FMT_NONE

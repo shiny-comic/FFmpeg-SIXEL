@@ -1220,7 +1220,7 @@ static int dxv_decode(AVCodecContext *avctx, AVFrame *frame,
 
     /* Frame is ready to be output. */
     frame->pict_type = AV_PICTURE_TYPE_I;
-    frame->key_frame = 1;
+    frame->flags |= AV_FRAME_FLAG_KEY;
     *got_frame = 1;
 
     return avpkt->size;
@@ -1262,7 +1262,7 @@ static int dxv_close(AVCodecContext *avctx)
 
 const FFCodec ff_dxv_decoder = {
     .p.name         = "dxv",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Resolume DXV"),
+    CODEC_LONG_NAME("Resolume DXV"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_DXV,
     .init           = dxv_init,

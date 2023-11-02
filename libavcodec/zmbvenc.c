@@ -413,10 +413,10 @@ static av_cold int encode_init(AVCodecContext *avctx)
 
 const FFCodec ff_zmbv_encoder = {
     .p.name         = "zmbv",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Zip Motion Blocks Video"),
+    CODEC_LONG_NAME("Zip Motion Blocks Video"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_ZMBV,
-    .p.capabilities = AV_CODEC_CAP_DR1,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(ZmbvEncContext),
     .init           = encode_init,
     FF_CODEC_ENCODE_CB(encode_frame),

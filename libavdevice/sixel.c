@@ -25,10 +25,12 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sixel.h>
+#include <time.h>
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "avdevice.h"
 #include "libavutil/time.h"
+#include "libavformat/mux.h"
 
 #if !defined(SIXELAPI)
 #  define LIBSIXEL_LEGACY_API
@@ -449,15 +451,15 @@ static const AVClass sixel_class = {
     .category   = AV_CLASS_CATEGORY_DEVICE_VIDEO_OUTPUT,
 };
 
-AVOutputFormat ff_sixel_muxer = {
-    .name           = "sixel",
-    .long_name      = NULL_IF_CONFIG_SMALL("SIXEL terminal device"),
+FFOutputFormat ff_sixel_muxer = {
+    .p.name           = "sixel",
+    .p.long_name      = NULL_IF_CONFIG_SMALL("SIXEL terminal device"),
     .priv_data_size = sizeof(SIXELContext),
-    .audio_codec    = AV_CODEC_ID_NONE,
-    .video_codec    = AV_CODEC_ID_RAWVIDEO,
+    .p.audio_codec    = AV_CODEC_ID_NONE,
+    .p.video_codec    = AV_CODEC_ID_RAWVIDEO,
     .write_header   = sixel_write_header,
     .write_packet   = sixel_write_packet,
     .write_trailer  = sixel_write_trailer,
-    .flags          = AVFMT_NOFILE, /* | AVFMT_VARIABLE_FPS, */
-    .priv_class     = &sixel_class,
+    .p.flags          = AVFMT_NOFILE, /* | AVFMT_VARIABLE_FPS, */
+    .p.priv_class     = &sixel_class,
 };

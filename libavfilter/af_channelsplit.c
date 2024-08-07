@@ -22,10 +22,11 @@
  *
  * Split an audio stream into per-channel streams.
  */
-
+#include "libavutil/avassert.h"
 #include "libavutil/attributes.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 
 #include "audio.h"
@@ -40,7 +41,6 @@ typedef struct ChannelSplitContext {
     const AVClass *class;
 
     AVChannelLayout channel_layout;
-    char    *channel_layout_str;
     char    *channels_str;
 
     int      map[64];
@@ -50,7 +50,7 @@ typedef struct ChannelSplitContext {
 #define A AV_OPT_FLAG_AUDIO_PARAM
 #define F AV_OPT_FLAG_FILTERING_PARAM
 static const AVOption channelsplit_options[] = {
-    { "channel_layout", "Input channel layout.", OFFSET(channel_layout_str), AV_OPT_TYPE_STRING, { .str = "stereo" }, .flags = A|F },
+    { "channel_layout", "Input channel layout.", OFFSET(channel_layout),   AV_OPT_TYPE_CHLAYOUT, { .str = "stereo" }, .flags = A|F },
     { "channels",        "Channels to extract.", OFFSET(channels_str),       AV_OPT_TYPE_STRING, { .str = "all" },    .flags = A|F },
     { NULL }
 };
@@ -62,13 +62,6 @@ static av_cold int init(AVFilterContext *ctx)
     ChannelSplitContext *s = ctx->priv;
     AVChannelLayout channel_layout = { 0 };
     int all = 0, ret = 0, i;
-
-    if ((ret = av_channel_layout_from_string(&s->channel_layout, s->channel_layout_str)) < 0) {
-        av_log(ctx, AV_LOG_ERROR, "Error parsing channel layout '%s'.\n",
-               s->channel_layout_str);
-        ret = AVERROR(EINVAL);
-        goto fail;
-    }
 
     if (!strcmp(s->channels_str, "all")) {
         if ((ret = av_channel_layout_copy(&channel_layout, &s->channel_layout)) < 0)
@@ -100,9 +93,11 @@ static av_cold int init(AVFilterContext *ctx)
         if (all) {
             s->map[i] = i;
         } else {
+            char buf[128];
+            av_channel_layout_describe(&s->channel_layout, buf, sizeof(buf));
             if ((ret = av_channel_layout_index_from_channel(&s->channel_layout, channel)) < 0) {
                 av_log(ctx, AV_LOG_ERROR, "Channel name '%s' not present in channel layout '%s'.\n",
-                       pad.name, s->channel_layout_str);
+                       pad.name, buf);
                 av_freep(&pad.name);
                 goto fail;
             }
@@ -156,27 +151,25 @@ static int query_formats(AVFilterContext *ctx)
 
 static int filter_frame(AVFilterLink *outlink, AVFrame *buf)
 {
+    AVFrame *buf_out;
     AVFilterContext *ctx = outlink->src;
     ChannelSplitContext *s = ctx->priv;
     const int i = FF_OUTLINK_IDX(outlink);
     enum AVChannel channel = av_channel_layout_channel_from_index(&buf->ch_layout, s->map[i]);
     int ret;
 
-    AVFrame *buf_out = av_frame_clone(buf);
+    av_assert1(channel >= 0);
+
+    buf_out = av_frame_clone(buf);
     if (!buf_out)
         return AVERROR(ENOMEM);
 
     buf_out->data[0] = buf_out->extended_data[0] = buf_out->extended_data[s->map[i]];
     ret = av_channel_layout_from_mask(&buf_out->ch_layout, 1ULL << channel);
-    if (ret < 0)
+    if (ret < 0) {
+        av_frame_free(&buf_out);
         return ret;
-#if FF_API_OLD_CHANNEL_LAYOUT
-FF_DISABLE_DEPRECATION_WARNINGS
-    buf_out->channel_layout =
-        av_channel_layout_extract_channel(buf->channel_layout, s->map[i]);
-    buf_out->channels = 1;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
+    }
 
     return ff_filter_frame(ctx->outputs[i], buf_out);
 }

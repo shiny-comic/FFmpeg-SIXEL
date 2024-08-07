@@ -29,6 +29,7 @@
 
 #include "libavutil/encryption_info.h"
 #include "libavutil/mastering_display_metadata.h"
+#include "libavutil/ambient_viewing_environment.h"
 #include "libavutil/spherical.h"
 #include "libavutil/stereo3d.h"
 
@@ -165,7 +166,9 @@ typedef struct MOVIndexRange {
 
 typedef struct MOVStreamContext {
     AVIOContext *pb;
+    int refcount;
     int pb_is_copied;
+    int id;               ///< AVStream id
     int ffindex;          ///< AVStream index
     int next_chunk;
     unsigned int chunk_count;
@@ -190,7 +193,7 @@ typedef struct MOVStreamContext {
     unsigned int sample_size; ///< may contain value calculated from stsd or value from stsz atom
     unsigned int stsz_sample_size; ///< always contains sample size from stsz atom
     unsigned int sample_count;
-    int *sample_sizes;
+    unsigned int *sample_sizes;
     int keyframe_absent;
     unsigned int keyframe_count;
     int *keyframes;
@@ -212,6 +215,8 @@ typedef struct MOVStreamContext {
     int timecode_track;
     int width;            ///< tkhd width
     int height;           ///< tkhd height
+    int h_spacing;        ///< pasp hSpacing
+    int v_spacing;        ///< pasp vSpacing
     int dts_shift;        ///< dts shift when ctts is negative
     uint32_t palette[256];
     int has_palette;
@@ -244,11 +249,15 @@ typedef struct MOVStreamContext {
 
     int32_t *display_matrix;
     AVStereo3D *stereo3d;
+    size_t stereo3d_size;
     AVSphericalMapping *spherical;
     size_t spherical_size;
     AVMasteringDisplayMetadata *mastering;
+    size_t mastering_size;
     AVContentLightMetadata *coll;
     size_t coll_size;
+    AVAmbientViewingEnvironment *ambient;
+    size_t ambient_size;
 
     uint32_t format;
 
@@ -260,7 +269,28 @@ typedef struct MOVStreamContext {
         AVEncryptionInfo *default_encrypted_sample;
         MOVEncryptionIndex *encryption_index;
     } cenc;
+
+    struct IAMFDemuxContext *iamf;
 } MOVStreamContext;
+
+typedef struct HEIFItem {
+    AVStream *st;
+    char *name;
+    int item_id;
+    int64_t extent_length;
+    int64_t extent_offset;
+    int width;
+    int height;
+    int type;
+    int is_idat_relative;
+} HEIFItem;
+
+typedef struct HEIFGrid {
+    HEIFItem *item;
+    HEIFItem **tile_item_list;
+    int16_t *tile_id_list;
+    int nb_tiles;
+} HEIFGrid;
 
 typedef struct MOVContext {
     const AVClass *class; ///< class for private options
@@ -268,6 +298,8 @@ typedef struct MOVContext {
     int time_scale;
     int64_t duration;     ///< duration of the longest track
     int found_moov;       ///< 'moov' atom has been found
+    int found_iloc;       ///< 'iloc' atom has been found
+    int found_iinf;       ///< 'iinf' atom has been found
     int found_mdat;       ///< 'mdat' atom has been found
     int found_hdlr_mdta;  ///< 'hdlr' atom with type 'mdta' has been found
     int trak_index;       ///< Index of the current 'trak'
@@ -319,14 +351,14 @@ typedef struct MOVContext {
     int have_read_mfra_size;
     uint32_t mfra_size;
     uint32_t max_stts_delta;
-    int is_still_picture_avif;
     int primary_item_id;
-    struct {
-        int item_id;
-        int extent_length;
-        int64_t extent_offset;
-    } *avif_info;
-    int avif_info_size;
+    int cur_item_id;
+    HEIFItem *heif_item;
+    int nb_heif_item;
+    HEIFGrid *heif_grid;
+    int nb_heif_grid;
+    int thmb_item_id;
+    int64_t idat_offset;
     int interleaved_read;
 } MOVContext;
 

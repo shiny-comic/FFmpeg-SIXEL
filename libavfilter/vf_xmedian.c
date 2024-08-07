@@ -22,6 +22,7 @@
 
 #include "libavutil/avstring.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/qsort.h"
@@ -58,6 +59,10 @@ typedef struct XMedianContext {
 
     int (*median_frames)(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
 } XMedianContext;
+
+#define OFFSET(x) offsetof(XMedianContext, x)
+#define FLAGS AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM
+#define TFLAGS AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_RUNTIME_PARAM
 
 static const enum AVPixelFormat pixel_fmts[] = {
     AV_PIX_FMT_GRAY8,
@@ -327,6 +332,14 @@ static int activate(AVFilterContext *ctx)
     return ff_framesync_activate(&s->fs);
 }
 
+static const AVFilterPad outputs[] = {
+    {
+        .name          = "default",
+        .type          = AVMEDIA_TYPE_VIDEO,
+        .config_props  = config_output,
+    },
+};
+
 #if CONFIG_XMEDIAN_FILTER
 static av_cold int xmedian_init(AVFilterContext *ctx)
 {
@@ -352,23 +365,11 @@ static av_cold int xmedian_init(AVFilterContext *ctx)
     return init(ctx);
 }
 
-#define OFFSET(x) offsetof(XMedianContext, x)
-#define FLAGS AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM
-#define TFLAGS AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM | AV_OPT_FLAG_RUNTIME_PARAM
-
 static const AVOption xmedian_options[] = {
     { "inputs", "set number of inputs", OFFSET(nb_inputs), AV_OPT_TYPE_INT, {.i64=3},  3, 255, .flags = FLAGS },
     { "planes", "set planes to filter", OFFSET(planes),    AV_OPT_TYPE_INT, {.i64=15}, 0,  15, .flags =TFLAGS },
     { "percentile", "set percentile",   OFFSET(percentile),AV_OPT_TYPE_FLOAT,{.dbl=0.5}, 0, 1, .flags =TFLAGS },
     { NULL },
-};
-
-static const AVFilterPad outputs[] = {
-    {
-        .name          = "default",
-        .type          = AVMEDIA_TYPE_VIDEO,
-        .config_props  = config_output,
-    },
 };
 
 FRAMESYNC_DEFINE_CLASS(xmedian, XMedianContext, fs);
@@ -448,14 +449,6 @@ static const AVFilterPad tmedian_inputs[] = {
     },
 };
 
-static const AVFilterPad tmedian_outputs[] = {
-    {
-        .name          = "default",
-        .type          = AVMEDIA_TYPE_VIDEO,
-        .config_props  = config_output,
-    },
-};
-
 AVFILTER_DEFINE_CLASS(tmedian);
 
 const AVFilter ff_vf_tmedian = {
@@ -464,7 +457,7 @@ const AVFilter ff_vf_tmedian = {
     .priv_size     = sizeof(XMedianContext),
     .priv_class    = &tmedian_class,
     FILTER_INPUTS(tmedian_inputs),
-    FILTER_OUTPUTS(tmedian_outputs),
+    FILTER_OUTPUTS(outputs),
     FILTER_PIXFMTS_ARRAY(pixel_fmts),
     .init          = init,
     .uninit        = uninit,

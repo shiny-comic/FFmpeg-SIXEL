@@ -11,7 +11,11 @@ fate-enhanced-flv-vp9: CMD = transcode ivf $(TARGET_SAMPLES)/vp9-test-vectors/vp
 
 FATE_ENHANCED_FLVENC_FFMPEG-$(call REMUX, FLV IVF, FLV_DEMUXER AV1_DECODER AV1_PARSER) += fate-enhanced-flv-av1
 fate-enhanced-flv-av1: CMD = stream_remux ivf $(TARGET_SAMPLES)/av1/seq_hdr_op_param_info.ivf "-c:v av1" \
-		flv "-c copy" "-c copy"
+		flv "-c copy" "-c:v av1" "-c copy"
+
+FATE_ENHANCED_FLVENC_FFMPEG-$(call REMUX, FLV, FLV_DEMUXER AAC_PARSER AC3_PARSER OPUS_PARSER FLAC_PARSER VP9_PARSER AV1_PARSER HEVC_PARSER H264_PARSER) += fate-enhanced-flv-multitrack
+fate-enhanced-flv-multitrack: CMD = stream_remux flv $(TARGET_SAMPLES)/flv/multitrack.flv "" flv "-map 0" "" "-c copy -map 0" \
+		"-show_entries stream_group=index,id,nb_streams,type:stream_group_components:stream_group_stream=index"
 
 FATE_FFMPEG_FFPROBE += $(FATE_FLVENC_FFMPEG_FFPROBE-yes)
 FATE_SAMPLES_FFMPEG += $(FATE_ENHANCED_FLVENC_FFMPEG-yes)

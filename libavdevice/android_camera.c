@@ -33,11 +33,13 @@
 #include <media/NdkImageReader.h>
 
 #include "libavformat/avformat.h"
+#include "libavformat/demux.h"
 #include "libavformat/internal.h"
 #include "libavutil/avstring.h"
 #include "libavutil/display.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/log.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixfmt.h"
@@ -648,8 +650,8 @@ static int add_display_matrix(AVFormatContext *avctx, AVStream *st)
         av_display_matrix_flip(display_matrix, 1, 0);
     }
 
-    side_data = av_packet_side_data_new(&st->codecpar->side_data,
-                                        &st->codecpar->nb_side_data,
+    side_data = av_packet_side_data_new(&st->codecpar->coded_side_data,
+                                        &st->codecpar->nb_coded_side_data,
                                         AV_PKT_DATA_DISPLAYMATRIX,
                                         sizeof(display_matrix), 0);
 
@@ -860,13 +862,13 @@ static const AVClass android_camera_class = {
     .category   = AV_CLASS_CATEGORY_DEVICE_VIDEO_INPUT,
 };
 
-const AVInputFormat ff_android_camera_demuxer = {
-    .name           = "android_camera",
-    .long_name      = NULL_IF_CONFIG_SMALL("Android camera input device"),
+const FFInputFormat ff_android_camera_demuxer = {
+    .p.name         = "android_camera",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Android camera input device"),
+    .p.flags        = AVFMT_NOFILE,
+    .p.priv_class   = &android_camera_class,
     .priv_data_size = sizeof(AndroidCameraCtx),
     .read_header    = android_camera_read_header,
     .read_packet    = android_camera_read_packet,
     .read_close     = android_camera_read_close,
-    .flags          = AVFMT_NOFILE,
-    .priv_class     = &android_camera_class,
 };

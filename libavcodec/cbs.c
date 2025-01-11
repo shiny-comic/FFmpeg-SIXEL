@@ -23,12 +23,13 @@
 #include "libavutil/avassert.h"
 #include "libavutil/buffer.h"
 #include "libavutil/common.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 
 #include "avcodec.h"
 #include "cbs.h"
 #include "cbs_internal.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 
 
 static const CodedBitstreamType *const cbs_type_table[] = {
@@ -49,6 +50,9 @@ static const CodedBitstreamType *const cbs_type_table[] = {
 #endif
 #if CONFIG_CBS_MPEG2
     &ff_cbs_type_mpeg2,
+#endif
+#if CONFIG_CBS_VP8
+    &ff_cbs_type_vp8,
 #endif
 #if CONFIG_CBS_VP9
     &ff_cbs_type_vp9,
@@ -73,6 +77,9 @@ const enum AVCodecID ff_cbs_all_codec_ids[] = {
 #endif
 #if CONFIG_CBS_MPEG2
     AV_CODEC_ID_MPEG2VIDEO,
+#endif
+#if CONFIG_CBS_VP8
+    AV_CODEC_ID_VP8,
 #endif
 #if CONFIG_CBS_VP9
     AV_CODEC_ID_VP9,
@@ -153,7 +160,7 @@ av_cold void ff_cbs_close(CodedBitstreamContext **ctx_ptr)
 
 static void cbs_unit_uninit(CodedBitstreamUnit *unit)
 {
-    ff_refstruct_unref(&unit->content_ref);
+    av_refstruct_unref(&unit->content_ref);
     unit->content = NULL;
 
     av_buffer_unref(&unit->data_ref);
@@ -201,7 +208,7 @@ static int cbs_read_fragment_content(CodedBitstreamContext *ctx,
                 continue;
         }
 
-        ff_refstruct_unref(&unit->content_ref);
+        av_refstruct_unref(&unit->content_ref);
         unit->content = NULL;
 
         av_assert0(unit->data && unit->data_ref);
@@ -215,7 +222,7 @@ static int cbs_read_fragment_content(CodedBitstreamContext *ctx,
             av_log(ctx->log_ctx, AV_LOG_VERBOSE,
                    "Skipping decomposition of unit %d "
                    "(type %"PRIu32").\n", i, unit->type);
-            ff_refstruct_unref(&unit->content_ref);
+            av_refstruct_unref(&unit->content_ref);
             unit->content = NULL;
         } else if (err < 0) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "Failed to read unit %d "
@@ -792,7 +799,7 @@ int ff_cbs_insert_unit_content(CodedBitstreamFragment *frag,
 
     if (content_ref) {
         // Create our own reference out of the user-supplied one.
-        content_ref = ff_refstruct_ref(content_ref);
+        content_ref = av_refstruct_ref(content_ref);
     }
 
     unit = &frag->units[position];
@@ -866,7 +873,7 @@ void ff_cbs_delete_unit(CodedBitstreamFragment *frag,
                 (frag->nb_units - position) * sizeof(*frag->units));
 }
 
-static void cbs_default_free_unit_content(FFRefStructOpaque opaque, void *content)
+static void cbs_default_free_unit_content(AVRefStructOpaque opaque, void *content)
 {
     const CodedBitstreamUnitTypeDescriptor *desc = opaque.c;
 
@@ -906,8 +913,8 @@ static const CodedBitstreamUnitTypeDescriptor
 
 static void *cbs_alloc_content(const CodedBitstreamUnitTypeDescriptor *desc)
 {
-    return ff_refstruct_alloc_ext_c(desc->content_size, 0,
-                                    (FFRefStructOpaque){ .c = desc },
+    return av_refstruct_alloc_ext_c(desc->content_size, 0,
+                                    (AVRefStructOpaque){ .c = desc },
                                     desc->content_type == CBS_CONTENT_TYPE_COMPLEX
                                             ? desc->type.complex.content_free
                                             : cbs_default_free_unit_content);
@@ -982,7 +989,7 @@ static int cbs_clone_noncomplex_unit_content(void **clonep,
     return 0;
 
 fail:
-    ff_refstruct_unref(&copy);
+    av_refstruct_unref(&copy);
     return err;
 }
 
@@ -1041,13 +1048,13 @@ int ff_cbs_make_unit_writable(CodedBitstreamContext *ctx,
     int err;
 
     av_assert0(unit->content);
-    if (ref && ff_refstruct_exclusive(ref))
+    if (ref && av_refstruct_exclusive(ref))
         return 0;
 
     err = cbs_clone_unit_content(ctx, unit);
     if (err < 0)
         return err;
-    ff_refstruct_unref(&ref);
+    av_refstruct_unref(&ref);
     return 0;
 }
 

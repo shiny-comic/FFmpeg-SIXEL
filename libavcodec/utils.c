@@ -40,7 +40,7 @@
 #include "codec_par.h"
 #include "decode.h"
 #include "hwconfig.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 #include "thread.h"
 #include "threadframe.h"
 #include "internal.h"
@@ -259,6 +259,9 @@ void avcodec_align_dimensions2(AVCodecContext *s, int *width, int *height,
         if (s->codec_id == AV_CODEC_ID_SVQ1) {
             w_align = 64;
             h_align = 64;
+        } else if (s->codec_id == AV_CODEC_ID_SNOW) {
+            w_align = 16;
+            h_align = 16;
         }
         break;
     case AV_PIX_FMT_RGB555:
@@ -362,17 +365,6 @@ void avcodec_align_dimensions(AVCodecContext *s, int *width, int *height)
     align               = FFMAX3(align, linesize_align[1], linesize_align[2]);
     *width              = FFALIGN(*width, align);
 }
-#if FF_API_AVCODEC_CHROMA_POS
-int avcodec_enum_to_chroma_pos(int *xpos, int *ypos, enum AVChromaLocation pos)
-{
-    return av_chroma_location_enum_to_pos(xpos, ypos, pos);
-}
-
-enum AVChromaLocation avcodec_chroma_pos_to_enum(int xpos, int ypos)
-{
-    return av_chroma_location_pos_to_enum(xpos, ypos);
-}
-#endif
 
 int avcodec_fill_audio_frame(AVFrame *frame, int nb_channels,
                              enum AVSampleFormat sample_fmt, const uint8_t *buf,
@@ -566,6 +558,7 @@ int av_get_bits_per_sample(enum AVCodecID codec_id)
         return 3;
     case AV_CODEC_ID_ADPCM_SBPRO_4:
     case AV_CODEC_ID_ADPCM_IMA_WAV:
+    case AV_CODEC_ID_ADPCM_IMA_XBOX:
     case AV_CODEC_ID_ADPCM_IMA_QT:
     case AV_CODEC_ID_ADPCM_SWF:
     case AV_CODEC_ID_ADPCM_MS:
@@ -728,10 +721,15 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
                 int blocks = frame_bytes / ba;
                 int64_t tmp = 0;
                 switch (id) {
+                case AV_CODEC_ID_ADPCM_IMA_XBOX:
+                    if (bps != 4)
+                        return 0;
+                    tmp = blocks * ((ba - 4 * ch) / (bps * ch) * 8);
+                    break;
                 case AV_CODEC_ID_ADPCM_IMA_WAV:
                     if (bps < 2 || bps > 5)
                         return 0;
-                    tmp = blocks * (1LL + (ba - 4 * ch) / (bps * ch) * 8);
+                    tmp = blocks * (1LL + (ba - 4 * ch) / (bps * ch) * 8LL);
                     break;
                 case AV_CODEC_ID_ADPCM_IMA_DK3:
                     tmp = blocks * (((ba - 16LL) * 2 / 3 * 4) / ch);
@@ -795,12 +793,7 @@ int av_get_audio_frame_duration(AVCodecContext *avctx, int frame_bytes)
 {
    int channels = avctx->ch_layout.nb_channels;
    int duration;
-#if FF_API_OLD_CHANNEL_LAYOUT
-FF_DISABLE_DEPRECATION_WARNINGS
-    if (!channels)
-        channels = avctx->channels;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
+
     duration = get_audio_frame_duration(avctx->codec_id, avctx->sample_rate,
                                     channels, avctx->block_align,
                                     avctx->codec_tag, avctx->bits_per_coded_sample,
@@ -813,12 +806,7 @@ int av_get_audio_frame_duration2(AVCodecParameters *par, int frame_bytes)
 {
    int channels = par->ch_layout.nb_channels;
    int duration;
-#if FF_API_OLD_CHANNEL_LAYOUT
-FF_DISABLE_DEPRECATION_WARNINGS
-    if (!channels)
-        channels = par->channels;
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
+
     duration = get_audio_frame_duration(par->codec_id, par->sample_rate,
                                     channels, par->block_align,
                                     par->codec_tag, par->bits_per_coded_sample,
@@ -826,14 +814,6 @@ FF_ENABLE_DEPRECATION_WARNINGS
                                     frame_bytes);
     return FFMAX(0, duration);
 }
-
-#if !HAVE_THREADS
-int ff_thread_init(AVCodecContext *s)
-{
-    return -1;
-}
-
-#endif
 
 unsigned int av_xiphlacing(unsigned char *s, unsigned int v)
 {
@@ -882,7 +862,7 @@ int ff_thread_ref_frame(ThreadFrame *dst, const ThreadFrame *src)
     av_assert0(!dst->progress);
 
     if (src->progress)
-        dst->progress = ff_refstruct_ref(src->progress);
+        dst->progress = av_refstruct_ref(src->progress);
 
     return 0;
 }
@@ -898,7 +878,7 @@ int ff_thread_replace_frame(ThreadFrame *dst, const ThreadFrame *src)
     if (ret < 0)
         return ret;
 
-    ff_refstruct_replace(&dst->progress, src->progress);
+    av_refstruct_replace(&dst->progress, src->progress);
 
     return 0;
 }
@@ -939,30 +919,11 @@ int ff_thread_can_start_frame(AVCodecContext *avctx)
 {
     return 1;
 }
-
-int ff_slice_thread_init_progress(AVCodecContext *avctx)
-{
-    return 0;
-}
-
-int ff_slice_thread_allocz_entries(AVCodecContext *avctx, int count)
-{
-    return 0;
-}
-
-void ff_thread_await_progress2(AVCodecContext *avctx, int field, int thread, int shift)
-{
-}
-
-void ff_thread_report_progress2(AVCodecContext *avctx, int field, int thread, int n)
-{
-}
-
 #endif
 
-const uint8_t *avpriv_find_start_code(const uint8_t *av_restrict p,
+const uint8_t *avpriv_find_start_code(const uint8_t *restrict p,
                                       const uint8_t *end,
-                                      uint32_t *av_restrict state)
+                                      uint32_t *restrict state)
 {
     int i;
 

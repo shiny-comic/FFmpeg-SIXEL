@@ -26,7 +26,7 @@
 #include <stdint.h>
 
 #include "avcodec.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 
 #define HWACCEL_CAP_ASYNC_SAFE      (1 << 0)
 #define HWACCEL_CAP_THREAD_SAFE     (1 << 1)
@@ -128,7 +128,7 @@ typedef struct FFHWAccel {
     /**
      * Uninitialize the hwaccel private data.
      *
-     * This will be called from get_format() or avcodec_close(), after hwaccel
+     * This will be called from get_format() or ff_codec_close(), after hwaccel
      * and hwaccel_context are already uninitialized.
      */
     int (*uninit)(AVCodecContext *avctx);
@@ -155,7 +155,7 @@ typedef struct FFHWAccel {
      * @param hwctx a pointer to an AVHWDeviceContext.
      * @param data the per-frame hardware accelerator private data to be freed.
      */
-    void (*free_frame_priv)(FFRefStructOpaque hwctx, void *data);
+    void (*free_frame_priv)(AVRefStructOpaque hwctx, void *data);
 
     /**
      * Callback to flush the hwaccel state.

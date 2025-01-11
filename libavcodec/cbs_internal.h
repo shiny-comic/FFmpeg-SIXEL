@@ -28,7 +28,7 @@
 #include "codec_id.h"
 #include "get_bits.h"
 #include "put_bits.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 
 
 enum CBSContentType {
@@ -93,7 +93,7 @@ typedef const struct CodedBitstreamUnitTypeDescriptor {
         } ref;
 
         struct {
-            void (*content_free)(FFRefStructOpaque opaque, void *content);
+            void (*content_free)(AVRefStructOpaque opaque, void *content);
             int  (*content_clone)(void **new_content, CodedBitstreamUnit *unit);
         } complex;
     } type;
@@ -341,6 +341,7 @@ extern const CodedBitstreamType ff_cbs_type_h265;
 extern const CodedBitstreamType ff_cbs_type_h266;
 extern const CodedBitstreamType ff_cbs_type_jpeg;
 extern const CodedBitstreamType ff_cbs_type_mpeg2;
+extern const CodedBitstreamType ff_cbs_type_vp8;
 extern const CodedBitstreamType ff_cbs_type_vp9;
 
 

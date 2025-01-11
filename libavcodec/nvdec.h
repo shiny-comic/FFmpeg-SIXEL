@@ -52,11 +52,11 @@ typedef struct NVDECFrame {
 typedef struct NVDECContext {
     CUVIDPICPARAMS pic_params;
 
-    struct FFRefStructPool *decoder_pool;
+    struct AVRefStructPool *decoder_pool;
 
     struct NVDECDecoder  *decoder; ///< RefStruct reference
 
-    uint8_t      *bitstream;
+    const uint8_t *bitstream;
     int           bitstream_len;
     unsigned int  bitstream_allocated;
     uint8_t      *bitstream_internal;

@@ -20,7 +20,8 @@
 
 #include "libavutil/riscv/asm.S"
 
-func ff_add_int16_rvv, zve32x
+func ff_add_int16_rvv, zve32x, zba
+        lpad    0
 1:
         vsetvli t0, a3, e16, m8, ta, ma
         vle16.v v16, (a0)
@@ -33,5 +34,24 @@ func ff_add_int16_rvv, zve32x
         sh1add  a0, t0, a0
         bnez    a3, 1b
 
+        ret
+endfunc
+
+func ff_add_hfyu_left_pred_bgr32_rvv, zve32x, b
+        lpad    0
+        vtype_ivli t1, 4, e8, ta, ma
+        li      t0, 4
+        vsetvl  zero, t0, t1
+        vle8.v  v8, (a3)
+        sh2add  a2, a2, a1
+1:
+        vle8.v  v0, (a1)
+        vadd.vv v8, v8, v0
+        addi    a1, a1, 4
+        vse8.v  v8, (a0)
+        addi    a0, a0, 4
+        bne     a2, a1, 1b
+
+        vse8.v  v8, (a3)
         ret
 endfunc

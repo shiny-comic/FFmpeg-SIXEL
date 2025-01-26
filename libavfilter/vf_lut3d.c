@@ -35,7 +35,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "drawutils.h"
-#include "internal.h"
+#include "filters.h"
 #include "video.h"
 #include "lut3d.h"
 
@@ -1177,6 +1177,9 @@ static AVFrame *apply_lut(AVFilterLink *inlink, AVFrame *in)
         }
         av_frame_copy_props(out, in);
     }
+
+    av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data,
+                                       AV_SIDE_DATA_PROP_COLOR_DEPENDENT);
 
     td.in  = in;
     td.out = out;

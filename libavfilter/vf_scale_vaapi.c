@@ -22,7 +22,7 @@
 #include "libavutil/pixdesc.h"
 
 #include "avfilter.h"
-#include "internal.h"
+#include "filters.h"
 #include "scale_eval.h"
 #include "video.h"
 #include "vaapi_vpp.h"
@@ -136,6 +136,12 @@ static int scale_vaapi_filter_frame(AVFilterLink *inlink, AVFrame *input_frame)
     err = av_frame_copy_props(output_frame, input_frame);
     if (err < 0)
         goto fail;
+
+    if (output_frame->width != input_frame->width || output_frame->height != input_frame->height) {
+        av_frame_side_data_remove_by_props(&output_frame->side_data,
+                                           &output_frame->nb_side_data,
+                                           AV_SIDE_DATA_PROP_SIZE_DEPENDENT);
+    }
 
     if (ctx->colour_primaries != AVCOL_PRI_UNSPECIFIED)
         output_frame->color_primaries = ctx->colour_primaries;
@@ -299,7 +305,7 @@ const AVFilter ff_vf_scale_vaapi = {
     .uninit        = &ff_vaapi_vpp_ctx_uninit,
     FILTER_INPUTS(scale_vaapi_inputs),
     FILTER_OUTPUTS(scale_vaapi_outputs),
-    FILTER_QUERY_FUNC(&ff_vaapi_vpp_query_formats),
+    FILTER_QUERY_FUNC2(&ff_vaapi_vpp_query_formats),
     .priv_class    = &scale_vaapi_class,
     .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
 };

@@ -898,8 +898,8 @@ dshow_cycle_formats(AVFormatContext *avctx, enum dshowDeviceType devtype,
 
         if (devtype == VideoDevice) {
             VIDEO_STREAM_CONFIG_CAPS *vcaps = caps;
-            BITMAPINFOHEADER *bih;
-            int64_t *fr;
+            BITMAPINFOHEADER *bih = NULL;
+            int64_t *fr = NULL;
 #if DSHOWDEBUG
             ff_print_VIDEO_STREAM_CONFIG_CAPS(vcaps);
 #endif
@@ -985,8 +985,8 @@ dshow_cycle_formats(AVFormatContext *avctx, enum dshowDeviceType devtype,
             }
         } else {
             WAVEFORMATEX *fx;
-            AUDIO_STREAM_CONFIG_CAPS *acaps = caps;
 #if DSHOWDEBUG
+            AUDIO_STREAM_CONFIG_CAPS *acaps = caps;
             ff_print_AUDIO_STREAM_CONFIG_CAPS(acaps);
 #endif
             if (IsEqualGUID(&type->formattype, &FORMAT_WaveFormatEx)) {

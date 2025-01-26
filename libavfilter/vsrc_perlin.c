@@ -27,7 +27,7 @@
 #include "libavutil/lfg.h"
 #include "libavutil/opt.h"
 #include "avfilter.h"
-#include "internal.h"
+#include "filters.h"
 #include "formats.h"
 #include "video.h"
 
@@ -95,11 +95,12 @@ static av_cold int init(AVFilterContext *ctx)
 static int config_props(AVFilterLink *outlink)
 {
     PerlinContext *perlin = outlink->src->priv;
+    FilterLink *l = ff_filter_link(outlink);
 
     outlink->w = perlin->w;
     outlink->h = perlin->h;
     outlink->time_base = av_inv_q(perlin->frame_rate);
-    outlink->frame_rate = perlin->frame_rate;
+    l->frame_rate = perlin->frame_rate;
 
     return 0;
 }
@@ -141,11 +142,13 @@ static int request_frame(AVFilterLink *outlink)
     return ff_filter_frame(outlink, picref);
 }
 
-static int query_formats(AVFilterContext *ctx)
+static int query_formats(const AVFilterContext *ctx,
+                         AVFilterFormatsConfig **cfg_in,
+                         AVFilterFormatsConfig **cfg_out)
 {
     enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_GRAY8, AV_PIX_FMT_NONE };
 
-    return ff_set_common_formats_from_list(ctx, pix_fmts);
+    return ff_set_common_formats_from_list2(ctx, cfg_in, cfg_out, pix_fmts);
 }
 
 static const AVFilterPad perlin_outputs[] = {
@@ -165,5 +168,5 @@ const AVFilter ff_vsrc_perlin = {
     .init          = init,
     .inputs        = NULL,
     FILTER_OUTPUTS(perlin_outputs),
-    FILTER_QUERY_FUNC(query_formats),
+    FILTER_QUERY_FUNC2(query_formats),
 };
